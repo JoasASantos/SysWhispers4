@@ -609,5 +609,215 @@
     "params": [
       { "name": "ObjectAttributes", "type": "POBJECT_ATTRIBUTES", "annotation": "IN" }
     ]
+  },
+  "NtCreateKey": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "KeyHandle",        "type": "PHANDLE",            "annotation": "OUT" },
+      { "name": "DesiredAccess",     "type": "ACCESS_MASK",        "annotation": "IN" },
+      { "name": "ObjectAttributes",  "type": "POBJECT_ATTRIBUTES", "annotation": "IN" },
+      { "name": "TitleIndex",        "type": "ULONG",              "annotation": "IN" },
+      { "name": "Class",             "type": "PUNICODE_STRING",    "annotation": "IN OPTIONAL" },
+      { "name": "CreateOptions",     "type": "ULONG",              "annotation": "IN" },
+      { "name": "Disposition",       "type": "PULONG",             "annotation": "OUT OPTIONAL" }
+    ]
+  },
+  "NtOpenKey": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "KeyHandle",        "type": "PHANDLE",            "annotation": "OUT" },
+      { "name": "DesiredAccess",     "type": "ACCESS_MASK",        "annotation": "IN" },
+      { "name": "ObjectAttributes",  "type": "POBJECT_ATTRIBUTES", "annotation": "IN" }
+    ]
+  },
+  "NtSetValueKey": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "KeyHandle",   "type": "HANDLE",           "annotation": "IN" },
+      { "name": "ValueName",   "type": "PUNICODE_STRING",  "annotation": "IN" },
+      { "name": "TitleIndex",  "type": "ULONG",            "annotation": "IN" },
+      { "name": "Type",        "type": "ULONG",            "annotation": "IN" },
+      { "name": "Data",        "type": "PVOID",            "annotation": "IN" },
+      { "name": "DataSize",    "type": "ULONG",            "annotation": "IN" }
+    ]
+  },
+  "NtQueryValueKey": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "KeyHandle",                   "type": "HANDLE",                        "annotation": "IN" },
+      { "name": "ValueName",                   "type": "PUNICODE_STRING",               "annotation": "IN" },
+      { "name": "KeyValueInformationClass",    "type": "KEY_VALUE_INFORMATION_CLASS",   "annotation": "IN" },
+      { "name": "KeyValueInformation",         "type": "PVOID",                         "annotation": "OUT" },
+      { "name": "Length",                       "type": "ULONG",                         "annotation": "IN" },
+      { "name": "ResultLength",                "type": "PULONG",                        "annotation": "OUT" }
+    ]
+  },
+  "NtDeleteKey": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "KeyHandle", "type": "HANDLE", "annotation": "IN" }
+    ]
+  },
+  "NtEnumerateKey": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "KeyHandle",              "type": "HANDLE",                  "annotation": "IN" },
+      { "name": "Index",                  "type": "ULONG",                   "annotation": "IN" },
+      { "name": "KeyInformationClass",    "type": "KEY_INFORMATION_CLASS",   "annotation": "IN" },
+      { "name": "KeyInformation",         "type": "PVOID",                   "annotation": "OUT" },
+      { "name": "Length",                  "type": "ULONG",                   "annotation": "IN" },
+      { "name": "ResultLength",           "type": "PULONG",                  "annotation": "OUT" }
+    ]
+  },
+  "NtEnumerateValueKey": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "KeyHandle",                   "type": "HANDLE",                        "annotation": "IN" },
+      { "name": "Index",                        "type": "ULONG",                         "annotation": "IN" },
+      { "name": "KeyValueInformationClass",    "type": "KEY_VALUE_INFORMATION_CLASS",   "annotation": "IN" },
+      { "name": "KeyValueInformation",         "type": "PVOID",                         "annotation": "OUT" },
+      { "name": "Length",                       "type": "ULONG",                         "annotation": "IN" },
+      { "name": "ResultLength",                "type": "PULONG",                        "annotation": "OUT" }
+    ]
+  },
+  "NtLoadDriver": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "DriverServiceName", "type": "PUNICODE_STRING", "annotation": "IN" }
+    ]
+  },
+  "NtUnloadDriver": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "DriverServiceName", "type": "PUNICODE_STRING", "annotation": "IN" }
+    ]
+  },
+  "NtSetSystemInformation": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "SystemInformationClass",   "type": "SYSTEM_INFORMATION_CLASS", "annotation": "IN" },
+      { "name": "SystemInformation",        "type": "PVOID",                    "annotation": "IN" },
+      { "name": "SystemInformationLength",  "type": "ULONG",                    "annotation": "IN" }
+    ]
+  },
+  "NtDeviceIoControlFile": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "FileHandle",         "type": "HANDLE",           "annotation": "IN" },
+      { "name": "Event",              "type": "HANDLE",           "annotation": "IN OPTIONAL" },
+      { "name": "ApcRoutine",         "type": "PIO_APC_ROUTINE",  "annotation": "IN OPTIONAL" },
+      { "name": "ApcContext",         "type": "PVOID",            "annotation": "IN OPTIONAL" },
+      { "name": "IoStatusBlock",      "type": "PIO_STATUS_BLOCK", "annotation": "OUT" },
+      { "name": "IoControlCode",      "type": "ULONG",            "annotation": "IN" },
+      { "name": "InputBuffer",        "type": "PVOID",            "annotation": "IN OPTIONAL" },
+      { "name": "InputBufferLength",  "type": "ULONG",            "annotation": "IN" },
+      { "name": "OutputBuffer",       "type": "PVOID",            "annotation": "OUT OPTIONAL" },
+      { "name": "OutputBufferLength", "type": "ULONG",            "annotation": "IN" }
+    ]
+  },
+  "NtSetInformationObject": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "Handle",                  "type": "HANDLE",                    "annotation": "IN" },
+      { "name": "ObjectInformationClass",  "type": "OBJECT_INFORMATION_CLASS",  "annotation": "IN" },
+      { "name": "ObjectInformation",       "type": "PVOID",                     "annotation": "IN" },
+      { "name": "ObjectInformationLength", "type": "ULONG",                     "annotation": "IN" }
+    ]
+  },
+  "NtCreateMutant": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "MutantHandle",     "type": "PHANDLE",            "annotation": "OUT" },
+      { "name": "DesiredAccess",    "type": "ACCESS_MASK",        "annotation": "IN" },
+      { "name": "ObjectAttributes", "type": "POBJECT_ATTRIBUTES", "annotation": "IN OPTIONAL" },
+      { "name": "InitialOwner",     "type": "BOOLEAN",            "annotation": "IN" }
+    ]
+  },
+  "NtOpenMutant": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "MutantHandle",     "type": "PHANDLE",            "annotation": "OUT" },
+      { "name": "DesiredAccess",    "type": "ACCESS_MASK",        "annotation": "IN" },
+      { "name": "ObjectAttributes", "type": "POBJECT_ATTRIBUTES", "annotation": "IN" }
+    ]
+  },
+  "NtCreateSemaphore": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "SemaphoreHandle",  "type": "PHANDLE",            "annotation": "OUT" },
+      { "name": "DesiredAccess",    "type": "ACCESS_MASK",        "annotation": "IN" },
+      { "name": "ObjectAttributes", "type": "POBJECT_ATTRIBUTES", "annotation": "IN OPTIONAL" },
+      { "name": "InitialCount",     "type": "LONG",               "annotation": "IN" },
+      { "name": "MaximumCount",     "type": "LONG",               "annotation": "IN" }
+    ]
+  },
+  "NtReleaseSemaphore": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "SemaphoreHandle", "type": "HANDLE", "annotation": "IN" },
+      { "name": "ReleaseCount",    "type": "LONG",   "annotation": "IN" },
+      { "name": "PreviousCount",   "type": "PLONG",  "annotation": "OUT OPTIONAL" }
+    ]
+  },
+  "NtCreatePort": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "PortHandle",                "type": "PHANDLE",            "annotation": "OUT" },
+      { "name": "ObjectAttributes",          "type": "POBJECT_ATTRIBUTES", "annotation": "IN" },
+      { "name": "MaxConnectionInfoLength",   "type": "ULONG",              "annotation": "IN" },
+      { "name": "MaxMessageLength",          "type": "ULONG",              "annotation": "IN" },
+      { "name": "MaxPoolUsage",              "type": "ULONG",              "annotation": "IN" }
+    ]
+  },
+  "NtConnectPort": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "PortHandle",                   "type": "PHANDLE",                          "annotation": "OUT" },
+      { "name": "PortName",                     "type": "PUNICODE_STRING",                  "annotation": "IN" },
+      { "name": "SecurityQos",                  "type": "PSECURITY_QUALITY_OF_SERVICE",     "annotation": "IN" },
+      { "name": "ClientView",                   "type": "PVOID",                            "annotation": "IN OUT OPTIONAL" },
+      { "name": "ServerView",                   "type": "PVOID",                            "annotation": "OUT OPTIONAL" },
+      { "name": "MaxMessageLength",             "type": "PULONG",                           "annotation": "OUT OPTIONAL" },
+      { "name": "ConnectionInformation",        "type": "PVOID",                            "annotation": "IN OUT OPTIONAL" },
+      { "name": "ConnectionInformationLength",  "type": "PULONG",                           "annotation": "IN OUT OPTIONAL" }
+    ]
+  },
+  "NtQuerySection": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "SectionHandle",              "type": "HANDLE",                      "annotation": "IN" },
+      { "name": "SectionInformationClass",    "type": "SECTION_INFORMATION_CLASS",   "annotation": "IN" },
+      { "name": "SectionInformation",         "type": "PVOID",                       "annotation": "OUT" },
+      { "name": "SectionInformationLength",   "type": "SIZE_T",                      "annotation": "IN" },
+      { "name": "ReturnLength",               "type": "PSIZE_T",                     "annotation": "OUT OPTIONAL" }
+    ]
+  },
+  "NtExtendSection": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "SectionHandle",   "type": "HANDLE",          "annotation": "IN" },
+      { "name": "NewSectionSize",  "type": "PLARGE_INTEGER",  "annotation": "IN OUT" }
+    ]
+  },
+  "NtQuerySystemEnvironmentValueEx": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "VariableName", "type": "PUNICODE_STRING", "annotation": "IN" },
+      { "name": "VendorGuid",   "type": "LPGUID",          "annotation": "IN" },
+      { "name": "Value",        "type": "PVOID",           "annotation": "OUT" },
+      { "name": "ValueLength",  "type": "PULONG",          "annotation": "IN OUT" },
+      { "name": "Attributes",   "type": "PULONG",          "annotation": "OUT OPTIONAL" }
+    ]
+  },
+  "NtRaiseHardError": {
+    "return_type": "NTSTATUS",
+    "params": [
+      { "name": "ErrorStatus",                 "type": "NTSTATUS",   "annotation": "IN" },
+      { "name": "NumberOfParameters",           "type": "ULONG",      "annotation": "IN" },
+      { "name": "UnicodeStringParameterMask",  "type": "ULONG",      "annotation": "IN" },
+      { "name": "Parameters",                  "type": "PULONG_PTR", "annotation": "IN" },
+      { "name": "ValidResponseOptions",        "type": "ULONG",      "annotation": "IN" },
+      { "name": "Response",                    "type": "PULONG",     "annotation": "OUT" }
+    ]
   }
 }

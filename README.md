@@ -29,6 +29,7 @@ Built on the lineage of [SysWhispers](https://github.com/jthuraisamy/SysWhispers
 | Embedded (direct `syscall`) | ✅ | ✅ | ✅ | ✅ |
 | Indirect (jmp to ntdll gadget) | ❌ | ❌ | ✅ | ✅ |
 | Randomized indirect (per-call entropy) | ❌ | ❌ | Partial† | **✅ Fixed** |
+| Call stack spoofing (fake RBP chain) | ❌ | ❌ | ❌ | **✅ New** |
 | Egg hunt (no static `0F 05` on disk) | ❌ | ❌ | ✅ | ✅ |
 | **Architecture** | | | | |
 | x64 | ✅ | ✅ | ✅ | ✅ |
@@ -51,13 +52,15 @@ Built on the lineage of [SysWhispers](https://github.com/jthuraisamy/SysWhispers
 | ntdll unhooking (remap from KnownDlls) | ❌ | ❌ | ❌ | **✅ New** |
 | Anti-debugging (6 checks) | ❌ | ❌ | ❌ | **✅ New** |
 | Sleep encryption (Ekko-style) | ❌ | ❌ | ❌ | **✅ New** |
+| String encryption (XOR literals) | ❌ | ❌ | ❌ | **✅ New** |
+| Call stack spoofing (full RBP chain) | ❌ | ❌ | ❌ | **✅ New** |
 | **Syscall Table** | | | | |
 | Windows XP → Win10 20H2 | ✅ | ✅ | ✅ | ✅ |
 | Windows 11 21H2–24H2 | ❌ | ❌ | Partial | **✅ Full** |
 | Windows Server 2022/2025 | ❌ | ❌ | ❌ | **✅ New** |
 | Auto-update from j00ru | ❌ | ❌ | ❌ | **✅ New** |
 | **Tool** | | | | |
-| Supported NT functions | ~12 | ~12 | ~35 | **64** |
+| Supported NT functions | ~12 | ~12 | ~35 | **86** |
 | Python version | 2/3 | 3 | 3 | **3.10+** |
 | Type annotations | ❌ | ❌ | Partial | **✅ Full** |
 
@@ -171,16 +174,17 @@ Defeats:
 | RecycledGate | `--resolve recycled` | **Maximum** | Medium | FreshyCalls + opcode cross-validation |
 | HW Breakpoint | `--resolve hw_breakpoint` | **Maximum** | Slow | DR registers + VEH |
 
-### Invocation Methods (4 total)
+### Invocation Methods (5 total)
 
-| Method | Flag | RIP in ntdll | Syscall on Disk | Random per Call |
-|--------|------|:-:|:-:|:-:|
-| Embedded | `--method embedded` | ❌ | ✅ | ❌ |
-| Indirect | `--method indirect` | ✅ | ❌ | ❌ |
-| Randomized | `--method randomized` | ✅ | ❌ | ✅ (64 gadgets) |
-| Egg Hunt | `--method egg` | ❌ | ❌ | ❌ |
+| Method | Flag | RIP in ntdll | Clean Call Stack | Syscall on Disk | Random per Call |
+|--------|------|:-:|:-:|:-:|:-:|
+| Embedded | `--method embedded` | ❌ | ❌ | ✅ | ❌ |
+| Indirect | `--method indirect` | ✅ | ❌ | ❌ | ❌ |
+| Randomized | `--method randomized` | ✅ | ❌ | ❌ | ✅ (64 gadgets) |
+| **Call Stack** | `--method callstack` | ✅ | **✅** | ❌ | ✅ |
+| Egg Hunt | `--method egg` | ❌ | ❌ | ❌ | ❌ |
 
-### Evasion Options (8 total)
+### Evasion Options (9 total)
 
 | Feature | Flag | Description |
 |---------|------|-------------|
@@ -192,6 +196,7 @@ Defeats:
 | ntdll Unhooking | `--unhook-ntdll` | Remap clean `.text` from `\KnownDlls\` |
 | Anti-Debug | `--anti-debug` | 6 detection checks (PEB, timing, heap, etc.) |
 | Sleep Encryption | `--sleep-encrypt` | Ekko-style XOR `.text` during sleep |
+| String Encryption | `--string-encrypt` | XOR-encoded string literals decoded at runtime |
 
 ---
 
@@ -210,12 +215,17 @@ python syswhispers.py --preset common
 # Injection preset — indirect via Tartarus' Gate
 python syswhispers.py --preset injection --method indirect --resolve tartarus
 
-# Maximum evasion: all techniques combined
+# Maximum evasion: all techniques combined (call stack spoofing)
 python syswhispers.py --preset stealth \
-    --method randomized --resolve recycled \
-    --obfuscate --encrypt-ssn --stack-spoof \
+    --method callstack --resolve recycled \
+    --obfuscate --encrypt-ssn --string-encrypt \
     --etw-bypass --amsi-bypass --unhook-ntdll \
     --anti-debug --sleep-encrypt
+
+# Randomized indirect (no stack spoofing needed)
+python syswhispers.py --preset stealth \
+    --method randomized --resolve recycled \
+    --obfuscate --encrypt-ssn --stack-spoof
 
 # Clean ntdll from disk — bypasses ALL hooks
 python syswhispers.py --preset injection \
@@ -258,7 +268,8 @@ Target:
   -c, --compiler COMPILER  msvc (default) | mingw | clang
 
 Techniques:
-  -m, --method METHOD      embedded (default) | indirect | randomized | egg
+  -m, --method METHOD      embedded (default) | indirect | randomized |
+                           callstack | egg
   -r, --resolve RESOLVE    freshycalls (default) | static | hells_gate |
                            halos_gate | tartarus | from_disk | recycled |
                            hw_breakpoint
@@ -272,6 +283,7 @@ Evasion / Obfuscation:
   --unhook-ntdll           Include ntdll unhooking (remap from KnownDlls)
   --anti-debug             Include anti-debugging checks (6 techniques)
   --sleep-encrypt          Include Ekko-style sleep encryption
+  --string-encrypt         XOR-encoded string literals decoded at runtime
 
 Output:
   --prefix PREFIX          Symbol prefix (default: SW4)
@@ -279,7 +291,7 @@ Output:
   --out-dir OUTDIR         Output directory (default: .)
 
 Info:
-  --list-functions         Print all 64 supported NT functions and exit
+  --list-functions         Print all 86 supported NT functions and exit
   --list-presets           Print all preset definitions and exit
   -v, --verbose            Verbose output / traceback on error
 ```
@@ -420,6 +432,24 @@ SW4_NtAllocateVirtualMemory PROC
 SW4_NtAllocateVirtualMemory ENDP
 ```
 
+### Call Stack Spoofing *(defeats stack walkers)*
+The most advanced invocation method. Fabricates plausible RBP chain frames with return addresses pointing only into ntdll, then jumps to a syscall;ret gadget. EDR stack walkers see a clean chain of signed-module frames — no address from your code appears.
+
+```
+TRADITIONAL INDIRECT (detectable):
+  ntdll!NtAllocateVirtualMemory
+  0x00007FF6A0001234   ← YOUR CODE (unbacked memory) → FLAGGED
+  ntdll!RtlUserThreadStart
+
+CALL STACK SPOOFING:
+  ntdll!NtAllocateVirtualMemory
+  ntdll!0x7FFE1234      ← Fake return (ntdll epilogue gadget)
+  ntdll!0x7FFE5678      ← Fake return (ntdll epilogue gadget)
+  kernel32!BaseThreadInitThunk  → CLEAN
+```
+
+Defeats: `RtlCaptureStackBackTrace`, RBP chain walking, basic unwind-info analysis.
+
 ### Egg Hunt
 Stubs contain an 8-byte random egg marker in place of `syscall`. `SW4_HatchEggs()` scans the `.text` section at startup and replaces each egg with `0F 05 90 90 90 90 90 90`. **No `syscall` opcode appears in the binary on disk.**
 
@@ -427,14 +457,14 @@ Stubs contain an 8-byte random egg marker in place of `syscall`. `SW4_HatchEggs(
 
 ## EDR Detection Landscape
 
-| Detection Vector | Embedded | Indirect | Randomized | Egg |
-|---|:-:|:-:|:-:|:-:|
-| User-mode hook bypass | ✅ | ✅ | ✅ | ✅ |
-| RIP inside ntdll at syscall | ❌ | ✅ | ✅ | ❌ |
-| No `0F 05` in binary on disk | ✅¹ | ✅ | ✅ | **✅** |
-| Random gadget per call | ❌ | ❌ | **✅** | ❌ |
-| Clean call stack | with `--stack-spoof` | with `--stack-spoof` | with `--stack-spoof` | with `--stack-spoof` |
-| Memory scan evasion during sleep | with `--sleep-encrypt` | with `--sleep-encrypt` | with `--sleep-encrypt` | with `--sleep-encrypt` |
+| Detection Vector | Embedded | Indirect | Randomized | **CallStack** | Egg |
+|---|:-:|:-:|:-:|:-:|:-:|
+| User-mode hook bypass | ✅ | ✅ | ✅ | ✅ | ✅ |
+| RIP inside ntdll at syscall | ❌ | ✅ | ✅ | ✅ | ❌ |
+| No `0F 05` in binary on disk | ✅¹ | ✅ | ✅ | ✅ | **✅** |
+| Random gadget per call | ❌ | ❌ | **✅** | **✅** | ❌ |
+| Clean call stack (all frames) | ❌ | ❌ | ❌ | **✅** | ❌ |
+| Memory scan evasion during sleep | +sleep-encrypt | +sleep-encrypt | +sleep-encrypt | +sleep-encrypt | +sleep-encrypt |
 | Kernel ETW-Ti bypass | ❌ | ❌ | ❌ | ❌ |
 
 ¹ The `syscall` opcode is in your PE's `.text` section — at your code address, not ntdll.
@@ -505,7 +535,7 @@ lea rsp, [rsp + 00h]         ; stack identity LEA
 
 ---
 
-## Supported Functions (64)
+## Supported Functions (86)
 
 ```bash
 python syswhispers.py --list-functions
@@ -514,13 +544,16 @@ python syswhispers.py --list-functions
 | Category | Functions |
 |---|---|
 | **Memory** | `NtAllocateVirtualMemory` · `NtAllocateVirtualMemoryEx` · `NtFreeVirtualMemory` · `NtWriteVirtualMemory` · `NtReadVirtualMemory` · `NtProtectVirtualMemory` · `NtQueryVirtualMemory` · `NtSetInformationVirtualMemory` |
-| **Section/Mapping** | `NtCreateSection` · `NtOpenSection` · `NtMapViewOfSection` · `NtUnmapViewOfSection` |
+| **Section/Mapping** | `NtCreateSection` · `NtOpenSection` · `NtMapViewOfSection` · `NtUnmapViewOfSection` · `NtQuerySection` · `NtExtendSection` |
 | **Process** | `NtOpenProcess` · `NtCreateProcess` · `NtCreateProcessEx` · `NtCreateUserProcess` · `NtTerminateProcess` · `NtSuspendProcess` · `NtResumeProcess` · `NtQueryInformationProcess` · `NtSetInformationProcess` |
 | **Thread** | `NtCreateThreadEx` · `NtOpenThread` · `NtTerminateThread` · `NtSuspendThread` · `NtResumeThread` · `NtGetContextThread` · `NtSetContextThread` · `NtQueueApcThread` · `NtQueueApcThreadEx` · `NtQueryInformationThread` · `NtSetInformationThread` · `NtAlertThread` · `NtAlertResumeThread` · `NtTestAlert` |
-| **Handle/Sync** | `NtClose` · `NtDuplicateObject` · `NtWaitForSingleObject` · `NtWaitForMultipleObjects` · `NtSignalAndWaitForSingleObject` · `NtCreateEvent` · `NtSetEvent` · `NtResetEvent` · `NtCreateTimer` · `NtSetTimer` |
-| **File** | `NtCreateFile` · `NtOpenFile` · `NtWriteFile` · `NtReadFile` · `NtDeleteFile` |
+| **Handle/Sync** | `NtClose` · `NtDuplicateObject` · `NtWaitForSingleObject` · `NtWaitForMultipleObjects` · `NtSignalAndWaitForSingleObject` · `NtCreateEvent` · `NtSetEvent` · `NtResetEvent` · `NtCreateTimer` · `NtSetTimer` · `NtCreateMutant` · `NtOpenMutant` · `NtCreateSemaphore` · `NtReleaseSemaphore` |
+| **File** | `NtCreateFile` · `NtOpenFile` · `NtWriteFile` · `NtReadFile` · `NtDeleteFile` · `NtDeviceIoControlFile` |
+| **Registry** | `NtCreateKey` · `NtOpenKey` · `NtSetValueKey` · `NtQueryValueKey` · `NtDeleteKey` · `NtEnumerateKey` · `NtEnumerateValueKey` |
 | **Token** | `NtOpenProcessToken` · `NtOpenThreadToken` · `NtQueryInformationToken` · `NtAdjustPrivilegesToken` · `NtDuplicateToken` · `NtImpersonateThread` |
 | **Transaction** | `NtCreateTransaction` · `NtRollbackTransaction` · `NtCommitTransaction` |
+| **IPC** | `NtCreatePort` · `NtConnectPort` |
+| **Driver/System** | `NtLoadDriver` · `NtUnloadDriver` · `NtSetSystemInformation` · `NtQuerySystemEnvironmentValueEx` · `NtSetInformationObject` · `NtRaiseHardError` |
 | **Misc** | `NtDelayExecution` · `NtQuerySystemInformation` · `NtQueryObject` · `NtFlushInstructionCache` · `NtContinue` |
 
 ---
@@ -536,7 +569,10 @@ python syswhispers.py --list-functions
 | `stealth` | 32 | **Maximum evasion**: injection + evasion + unhooking support |
 | `file_ops` | 7 | File I/O via NT syscalls |
 | `transaction` | 7 | Process doppelganging / transaction rollback |
-| `all` | 64 | Every supported function |
+| `registry` | 8 | Registry manipulation (key/value CRUD, enumeration) |
+| `driver` | 8 | Driver loading, system information manipulation |
+| `callback` | 12 | IPC, synchronization, callback-oriented operations |
+| `all` | 86 | Every supported function |
 
 ---
 
@@ -545,8 +581,8 @@ python syswhispers.py --list-functions
 ### Minimum Detection Footprint (Red Team)
 ```bash
 python syswhispers.py --preset stealth \
-    --method randomized --resolve recycled \
-    --obfuscate --encrypt-ssn --stack-spoof \
+    --method callstack --resolve recycled \
+    --obfuscate --encrypt-ssn --string-encrypt \
     --unhook-ntdll --etw-bypass --amsi-bypass \
     --anti-debug --sleep-encrypt
 ```
@@ -602,19 +638,25 @@ Updated via `scripts/update_syscall_table.py` from [j00ru/windows-syscalls](http
 SysWhispers4/
 ├── syswhispers.py              # CLI entry point
 ├── core/
-│   ├── models.py               # Enums, dataclasses (8 resolution, 4 invocation methods)
-│   ├── generator.py            # Code generation engine (~1900 lines)
+│   ├── models.py               # Enums, dataclasses (8 resolution, 5 invocation methods)
+│   ├── generator.py            # Code generation engine (~2500 lines)
 │   ├── obfuscator.py           # Obfuscation: junk, eggs, XOR, string encryption
 │   └── utils.py                # Hashes (DJB2, CRC32, FNV-1a), data loading
 ├── data/
-│   ├── prototypes.json         # 64 NT function signatures
-│   ├── presets.json            # 8 function presets
+│   ├── prototypes.json         # 86 NT function signatures
+│   ├── presets.json            # 11 function presets
 │   ├── syscalls_nt_x64.json   # x64 SSN table (Win7–Win11 24H2)
 │   └── syscalls_nt_x86.json   # x86 SSN table
 ├── scripts/
 │   └── update_syscall_table.py # Auto-fetch latest j00ru table
 └── examples/
-    └── example_injection.c     # Reference integration example
+    ├── example_injection.c         # Basic injection
+    ├── example_process_hollowing.c # Process hollowing
+    ├── example_dll_injection.c     # DLL injection
+    ├── example_token_manipulation.c# Token privilege escalation
+    ├── example_evasion_combo.c     # Full evasion combo
+    ├── example_apc_injection.c     # APC injection (Early Bird + Classic)
+    └── example_registry_ops.c      # Registry operations
 ```
 
 ---

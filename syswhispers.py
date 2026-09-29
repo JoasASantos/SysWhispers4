@@ -96,7 +96,7 @@ def _validate_functions(functions: list[str]) -> None:
 
 def _print_banner() -> None:
     print(banner())
-    print("  Version : 4.1.0")
+    print("  Version : 4.2.0")
     print("  Author  : CyberSecurityUP / community")
     print()
 
@@ -126,6 +126,7 @@ Invocation methods:
   indirect      jmp to syscall;ret gadget inside ntdll (RIP appears in ntdll)
   randomized    jmp to a RANDOM syscall;ret gadget in ntdll per call (anti-RIP)
   egg           8-byte egg marker replaced at runtime -- no static syscall bytes
+  callstack     full call stack spoofing via RBP frame fabrication (defeats stack walkers)
 
 Presets:
   common        General process/thread/memory operations (25 functions)
@@ -135,7 +136,10 @@ Presets:
   stealth       Maximum evasion: injection + evasion + unhooking (31 functions)
   file_ops      File I/O via NT syscalls (7 functions)
   transaction   Process doppelganging / transaction rollback (7 functions)
-  all           All supported functions (62 functions)
+  registry      Registry manipulation via NT syscalls (8 functions)
+  driver        Driver loading and system information manipulation (8 functions)
+  callback      IPC, synchronization, and callback operations (12 functions)
+  all           All supported functions (86 functions)
 
 Examples:
   python syswhispers.py --preset common
@@ -153,7 +157,7 @@ Examples:
     sel.add_argument(
         "-p", "--preset",
         metavar="PRESET[,PRESET...]",
-        help="Preset: common, injection, evasion, token, stealth, file_ops, transaction, all",
+        help="Preset: common, injection, evasion, token, stealth, file_ops, transaction, registry, driver, callback, all",
     )
     sel.add_argument(
         "-f", "--functions",
@@ -237,6 +241,11 @@ Examples:
         "--sleep-encrypt",
         action="store_true",
         help="Include sleep encryption (Ekko-style XOR .text during sleep)",
+    )
+    eva.add_argument(
+        "--string-encrypt",
+        action="store_true",
+        help="Compile-time string encryption (XOR-encoded string literals decoded at runtime)",
     )
 
     # ---- Static table override -------------------------------------------
@@ -350,6 +359,7 @@ def main() -> None:
         unhook_ntdll    = args.unhook_ntdll,
         anti_debug      = args.anti_debug,
         sleep_encrypt   = args.sleep_encrypt,
+        string_encrypt  = args.string_encrypt,
         syscall_table   = args.syscall_table,
     )
 
@@ -368,6 +378,7 @@ def main() -> None:
     if cfg.unhook_ntdll:  print( "  Unhook     : yes (remap clean ntdll from KnownDlls)")
     if cfg.anti_debug:    print( "  Anti-debug : yes (PEB, timing, heap, debug port, instrumentation)")
     if cfg.sleep_encrypt: print( "  Sleep crypt: yes (Ekko-style XOR .text during sleep)")
+    if cfg.string_encrypt:print( "  Str encrypt: yes (compile-time XOR string literals)")
     print()
 
     # ---- Generate --------------------------------------------------------

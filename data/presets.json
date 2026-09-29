@@ -212,7 +212,72 @@
       "NtSetTimer",
       "NtTestAlert",
       "NtAlertResumeThread",
-      "NtAlertThread"
+      "NtAlertThread",
+      "NtCreateKey",
+      "NtOpenKey",
+      "NtSetValueKey",
+      "NtQueryValueKey",
+      "NtDeleteKey",
+      "NtEnumerateKey",
+      "NtEnumerateValueKey",
+      "NtLoadDriver",
+      "NtUnloadDriver",
+      "NtSetSystemInformation",
+      "NtDeviceIoControlFile",
+      "NtSetInformationObject",
+      "NtCreateMutant",
+      "NtOpenMutant",
+      "NtCreateSemaphore",
+      "NtReleaseSemaphore",
+      "NtCreatePort",
+      "NtConnectPort",
+      "NtQuerySection",
+      "NtExtendSection",
+      "NtQuerySystemEnvironmentValueEx",
+      "NtRaiseHardError"
+    ]
+  },
+  "registry": {
+    "description": "Registry manipulation via NT syscalls (key/value CRUD, enumeration)",
+    "functions": [
+      "NtCreateKey",
+      "NtOpenKey",
+      "NtSetValueKey",
+      "NtQueryValueKey",
+      "NtDeleteKey",
+      "NtEnumerateKey",
+      "NtEnumerateValueKey",
+      "NtClose"
+    ]
+  },
+  "driver": {
+    "description": "Driver loading and system information manipulation",
+    "functions": [
+      "NtLoadDriver",
+      "NtUnloadDriver",
+      "NtSetSystemInformation",
+      "NtQuerySystemInformation",
+      "NtDeviceIoControlFile",
+      "NtCreateFile",
+      "NtOpenFile",
+      "NtClose"
+    ]
+  },
+  "callback": {
+    "description": "IPC, synchronization, and callback-oriented operations",
+    "functions": [
+      "NtCreateMutant",
+      "NtOpenMutant",
+      "NtCreateSemaphore",
+      "NtReleaseSemaphore",
+      "NtCreatePort",
+      "NtConnectPort",
+      "NtCreateEvent",
+      "NtSetEvent",
+      "NtResetEvent",
+      "NtWaitForSingleObject",
+      "NtWaitForMultipleObjects",
+      "NtClose"
     ]
   }
 }

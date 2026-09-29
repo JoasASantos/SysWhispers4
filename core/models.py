@@ -32,6 +32,7 @@ class InvocationMethod(str, Enum):
     Indirect    = "indirect"    # jmp to syscall;ret gadget in ntdll
     Randomized  = "randomized"  # jmp to RANDOM syscall;ret gadget in ntdll
     Egg         = "egg"         # egg marker replaced at runtime with syscall
+    CallStack   = "callstack"   # full call stack spoofing via RBP frame fabrication
 
     def __str__(self) -> str:
         return self.value
