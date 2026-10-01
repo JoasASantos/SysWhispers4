@@ -238,43 +238,20 @@ class SysWhispers4:
 # define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
 #endif
 
-/* ---------- Process/Thread information classes (winternl.h on MinGW) ----- */
-#ifndef __MINGW32__
-#ifndef _PROCESSINFOCLASS
-typedef enum _PROCESSINFOCLASS {{
-    ProcessBasicInformation           = 0,
-    ProcessDebugPort                  = 7,
-    ProcessWow64Information           = 26,
-    ProcessImageFileName              = 27,
-    ProcessBreakOnTermination         = 29,
-    ProcessSubsystemInformation       = 75,
-    ProcessInstrumentationCallback    = 40,
-}} PROCESSINFOCLASS;
+/* ---------- Extra enum values (may be absent in some SDK winternl.h) ------ */
+/* The enum types themselves (PROCESSINFOCLASS, THREADINFOCLASS, etc.) are
+ * already declared by <winternl.h>.  Only extra values are added here.       */
+
+#ifndef ProcessSubsystemInformation
+#define ProcessSubsystemInformation       75
+#endif
+#ifndef ProcessInstrumentationCallback
+#define ProcessInstrumentationCallback    40
 #endif
 
-#ifndef _THREADINFOCLASS
-typedef enum _THREADINFOCLASS {{
-    ThreadBasicInformation            = 0,
-    ThreadTimes                       = 1,
-    ThreadPriority                    = 2,
-    ThreadBasePriority                = 3,
-    ThreadAffinityMask                = 4,
-    ThreadImpersonationToken          = 5,
-    ThreadDescriptorTableEntry        = 6,
-    ThreadEnableAlignmentFaultFixup   = 7,
-    ThreadEventPair                   = 8,
-    ThreadQuerySetWin32StartAddress   = 9,
-    ThreadZeroTlsCell                 = 10,
-    ThreadPerformanceCount            = 11,
-    ThreadAmILastThread               = 12,
-    ThreadIdealProcessor              = 13,
-    ThreadPriorityBoost               = 14,
-    ThreadSetTlsArrayAddress          = 15,
-    ThreadIsIoPending                 = 16,
-    ThreadHideFromDebugger            = 17,
-}} THREADINFOCLASS;
+#ifndef ThreadHideFromDebugger
+#define ThreadHideFromDebugger            17
 #endif
-#endif /* !__MINGW32__ */
 
 /* ---------- Memory information class ------------------------------------- */
 #ifndef _MEMORY_INFORMATION_CLASS
@@ -289,71 +266,26 @@ typedef enum _MEMORY_INFORMATION_CLASS {{
 }} MEMORY_INFORMATION_CLASS;
 #endif
 
-/* ---------- System information class (winternl.h on MinGW) --------------- */
-#ifndef __MINGW32__
-#ifndef _SYSTEM_INFORMATION_CLASS
-typedef enum _SYSTEM_INFORMATION_CLASS {{
-    SystemBasicInformation            = 0,
-    SystemProcessInformation          = 5,
-    SystemModuleInformation           = 11,
-    SystemHandleInformation           = 16,
-    SystemKernelDebuggerInformation   = 35,
-    SystemCodeIntegrityInformation    = 103,
-    SystemExtendedHandleInformation   = 64,
-}} SYSTEM_INFORMATION_CLASS;
+/* SYSTEM_INFORMATION_CLASS -- base enum in <winternl.h>; extras below */
+#ifndef SystemModuleInformation
+#define SystemModuleInformation           11
+#endif
+#ifndef SystemHandleInformation
+#define SystemHandleInformation           16
+#endif
+#ifndef SystemKernelDebuggerInformation
+#define SystemKernelDebuggerInformation   35
+#endif
+#ifndef SystemExtendedHandleInformation
+#define SystemExtendedHandleInformation   64
+#endif
+#ifndef SystemCodeIntegrityInformation
+#define SystemCodeIntegrityInformation    103
 #endif
 
-/* ---------- Object information class (winternl.h on MinGW) --------------- */
-#ifndef _OBJECT_INFORMATION_CLASS
-typedef enum _OBJECT_INFORMATION_CLASS {{
-    ObjectBasicInformation            = 0,
-    ObjectNameInformation             = 1,
-    ObjectTypeInformation             = 2,
-}} OBJECT_INFORMATION_CLASS;
-#endif
-#endif /* !__MINGW32__ */
+/* OBJECT_INFORMATION_CLASS -- base values in <winternl.h>, no extras needed */
 
-/* ---------- Token types (winnt.h on MinGW) -------------------------------- */
-#ifndef __MINGW32__
-#ifndef _TOKEN_INFORMATION_CLASS
-typedef enum _TOKEN_INFORMATION_CLASS {{
-    TokenUser                         = 1,
-    TokenGroups                       = 2,
-    TokenPrivileges                   = 3,
-    TokenOwner                        = 4,
-    TokenPrimaryGroup                 = 5,
-    TokenDefaultDacl                  = 6,
-    TokenSource                       = 7,
-    TokenType                         = 8,
-    TokenImpersonationLevel           = 9,
-    TokenStatistics                   = 10,
-    TokenRestrictedSids               = 11,
-    TokenSessionId                    = 12,
-    TokenGroupsAndPrivileges          = 13,
-    TokenSandBoxInert                 = 15,
-    TokenOrigin                       = 17,
-    TokenElevationType                = 18,
-    TokenLinkedToken                  = 19,
-    TokenElevation                    = 20,
-    TokenHasRestrictions              = 21,
-    TokenAccessInformation            = 22,
-    TokenVirtualizationAllowed        = 23,
-    TokenVirtualizationEnabled        = 24,
-    TokenIntegrityLevel               = 25,
-    TokenUIAccess                     = 26,
-    TokenMandatoryPolicy              = 27,
-    TokenLogonSid                     = 28,
-    TokenIsAppContainer               = 29,
-}} TOKEN_INFORMATION_CLASS;
-#endif
-
-#ifndef _TOKEN_TYPE
-typedef enum _TOKEN_TYPE {{
-    TokenPrimary       = 1,
-    TokenImpersonation = 2,
-}} TOKEN_TYPE;
-#endif
-#endif /* !__MINGW32__ */
+/* TOKEN_INFORMATION_CLASS, TOKEN_TYPE -- always in <winnt.h> via <windows.h> */
 
 /* ---------- Section / MapView types --------------------------------------- */
 #ifndef _SECTION_INHERIT
@@ -434,55 +366,10 @@ typedef VOID (NTAPI *PPS_APC_ROUTINE)(
 );
 #endif
 
-#ifndef _TOKEN_PRIVILEGES
-typedef struct _TOKEN_PRIVILEGES {{
-    DWORD             PrivilegeCount;
-    LUID_AND_ATTRIBUTES Privileges[ANYSIZE_ARRAY];
-}} TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
-#endif
-
-/* ---------- Client ID (winternl.h on MinGW) -------------------------------- */
-#ifndef __MINGW32__
-#ifndef _CLIENT_ID
-typedef struct _CLIENT_ID {{
-    PVOID UniqueProcess;
-    PVOID UniqueThread;
-}} CLIENT_ID, *PCLIENT_ID;
-#endif
-#endif /* !__MINGW32__ */
-
-/* ---------- IO Status Block (winternl.h on MinGW) ------------------------- */
-#ifndef __MINGW32__
-#ifndef _IO_STATUS_BLOCK
-typedef struct _IO_STATUS_BLOCK {{
-    union {{
-        NTSTATUS Status;
-        PVOID    Pointer;
-    }};
-    ULONG_PTR Information;
-}} IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
-#endif
-#endif /* !__MINGW32__ */
-
-/* ---------- IO APC Routine ------------------------------------------------ */
-#ifndef _PIO_APC_ROUTINE
-typedef VOID (NTAPI *PIO_APC_ROUTINE)(
-    IN PVOID ApcContext,
-    IN PIO_STATUS_BLOCK IoStatusBlock,
-    IN ULONG Reserved
-);
-#endif
-
-/* ---------- Security QoS -------------------------------------------------- */
-#ifndef _SECURITY_QUALITY_OF_SERVICE
-typedef struct _SECURITY_QUALITY_OF_SERVICE {{
-    DWORD                        Length;
-    SECURITY_IMPERSONATION_LEVEL ImpersonationLevel;
-    BOOLEAN                      ContextTrackingMode;
-    BOOLEAN                      EffectiveOnly;
-}} SECURITY_QUALITY_OF_SERVICE, *PSECURITY_QUALITY_OF_SERVICE;
-#endif
-#endif /* !__MINGW32__ */
+/* TOKEN_PRIVILEGES -- in <winnt.h> via <windows.h>
+ * CLIENT_ID, IO_STATUS_BLOCK, PIO_APC_ROUTINE -- in <winternl.h>
+ * SECURITY_QUALITY_OF_SERVICE -- in <winnt.h> via <windows.h>
+ * All are available after the #includes above; do not redefine.              */
 
 /* ---------- Timer types (ntdef.h on MinGW) -------------------------------- */
 #ifndef __MINGW32__
@@ -2195,6 +2082,10 @@ OPTION DOTNAME
                 f"    EXTERN {p}SavedRSP:QWORD\n"
                 f"    EXTERN {p}SavedRBP:QWORD\n"
             )
+
+        if self.cfg.encrypt_ssn:
+            key = self._xor_key()
+            header += f"\n{p}XOR_KEY EQU 0{key:08X}h\n"
 
         header += "\n.code\n\n"
 
