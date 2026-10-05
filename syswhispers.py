@@ -363,6 +363,18 @@ def main() -> None:
         syscall_table   = args.syscall_table,
     )
 
+    # ---- WoW64 constraints ------------------------------------------------
+    if cfg.arch == Architecture.WoW64:
+        if cfg.compiler != Compiler.MSVC:
+            print("  [!] WoW64 Heaven's Gate requires MSVC (ml.exe). Forcing --compiler msvc.")
+            cfg.compiler = Compiler.MSVC
+        if cfg.method != InvocationMethod.Embedded:
+            print(f"  [!] WoW64 only supports embedded invocation (Heaven's Gate). Ignoring --method {cfg.method}.")
+            cfg.method = InvocationMethod.Embedded
+        if cfg.resolve not in (ResolutionMethod.Static, ResolutionMethod.SyscallsFromDisk):
+            print(f"  [i] WoW64 dynamic resolution uses SyscallsFromDisk (64-bit ntdll from KnownDlls).")
+            print(f"       Requested '{cfg.resolve}' will be handled via SyscallsFromDisk internally.")
+
     # ---- Summary ---------------------------------------------------------
     print(f"  Functions  : {len(functions)}")
     print(f"  Arch       : {cfg.arch}")

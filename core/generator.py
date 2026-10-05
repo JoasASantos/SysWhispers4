@@ -69,6 +69,8 @@ class SysWhispers4:
         if cfg.compiler == Compiler.MSVC:
             if cfg.arch == Architecture.x86:
                 asm_fname = f"{cfg.out_file}.x86.asm"
+            elif cfg.arch == Architecture.WoW64:
+                asm_fname = f"{cfg.out_file}.wow64.asm"
             else:
                 asm_fname = f"{cfg.out_file}.asm"
             outputs[asm_fname] = self._gen_asm_msvc()
@@ -153,7 +155,7 @@ class SysWhispers4:
 
     def _get_static_ssns(self) -> List[Optional[int]]:
         """For static resolution: list of SSNs per function (None if unknown)."""
-        tbl = self._ssn_x64 if self.cfg.arch != Architecture.x86 else self._ssn_x86
+        tbl = self._ssn_x86 if self.cfg.arch == Architecture.x86 else self._ssn_x64
         result = []
         for proto in self._prototypes:
             entry = tbl.get(proto.name)
@@ -169,7 +171,7 @@ class SysWhispers4:
     def _static_ssn_table_c(self) -> str:
         """Generate static SSN lookup table for all supported builds."""
         p = self.cfg.prefix
-        tbl = self._ssn_x64 if self.cfg.arch != Architecture.x86 else self._ssn_x86
+        tbl = self._ssn_x86 if self.cfg.arch == Architecture.x86 else self._ssn_x64
 
         lines = [f"/* Build-indexed SSN table for static resolution */"]
         lines.append(f"static const {p}SSN_ENTRY {p}StaticSsnTable[{p}FUNC_COUNT] = {{")
@@ -537,7 +539,12 @@ EXTERN_C BOOL {p}Initialize(VOID);
         sections.append(self._c_eat_scanner(p))
 
         # Resolution methods
-        if self.cfg.resolve == ResolutionMethod.Static:
+        # WoW64 always uses SyscallsFromDisk internally (need 64-bit ntdll
+        # for x64 SSNs; dynamic methods scan in-memory 32-bit ntdll = useless)
+        is_wow64 = self.cfg.arch == Architecture.WoW64
+        if is_wow64 and self.cfg.resolve != ResolutionMethod.Static:
+            sections.append(self._c_syscalls_from_disk_wow64(p, n))
+        elif self.cfg.resolve == ResolutionMethod.Static:
             sections.append(self._c_static_resolution(p, n, func_names))
         elif self.cfg.resolve == ResolutionMethod.FreshyCalls:
             sections.append(self._c_freshycalls(p, n))
@@ -554,15 +561,17 @@ EXTERN_C BOOL {p}Initialize(VOID);
         elif self.cfg.resolve == ResolutionMethod.HWBreakpoint:
             sections.append(self._c_hw_breakpoint(p, n))
 
-        if self.cfg.method in (InvocationMethod.Indirect, InvocationMethod.Randomized,
-                                InvocationMethod.CallStack):
-            sections.append(self._c_gadget_finder(p, n))
+        # WoW64 uses Heaven's Gate (embedded only) -- no gadgets/spoof/egg
+        if not is_wow64:
+            if self.cfg.method in (InvocationMethod.Indirect, InvocationMethod.Randomized,
+                                    InvocationMethod.CallStack):
+                sections.append(self._c_gadget_finder(p, n))
 
-        if self.cfg.method == InvocationMethod.CallStack:
-            sections.append(self._c_callstack_spoof(p))
+            if self.cfg.method == InvocationMethod.CallStack:
+                sections.append(self._c_callstack_spoof(p))
 
-        if self.cfg.method == InvocationMethod.Egg:
-            sections.append(self._c_egg_hatcher(p))
+            if self.cfg.method == InvocationMethod.Egg:
+                sections.append(self._c_egg_hatcher(p))
 
         if self.cfg.etw_bypass:
             sections.append(self._c_etw_bypass(p))
@@ -660,7 +669,7 @@ static DWORD {p}HashStr(const char* s) {{
 }}"""
 
     def _c_peb_ntdll(self, p: str) -> str:
-        if self.cfg.arch == Architecture.x86:
+        if self.cfg.arch in (Architecture.x86, Architecture.WoW64):
             peb_read = "PPEB pPeb = (PPEB)__readfsdword(0x30);"
         else:
             peb_read = "PPEB pPeb = (PPEB)__readgsqword(0x60);"
@@ -1146,6 +1155,102 @@ static BOOL {p}SyscallsFromDisk(PVOID pNtdll) {{
 }}"""
 
     # -----------------------------------------------------------------------
+    # WoW64 SyscallsFromDisk -- maps 64-bit ntdll from KnownDlls, reads
+    # x64 SSNs using explicit IMAGE_NT_HEADERS64 (compiled as 32-bit code)
+    # -----------------------------------------------------------------------
+
+    def _c_syscalls_from_disk_wow64(self, p: str, n: int) -> str:
+        return f"""\
+/* =========================================================================
+ *  SyscallsFromDisk (WoW64) -- map 64-bit ntdll from \\KnownDlls\\ntdll.dll
+ *  and parse its PE with explicit 64-bit structures.  Compiled as x86 code
+ *  but reading an x64 image to extract x64 SSNs for Heaven's Gate calls.
+ * ========================================================================= */
+
+static BOOL {p}SyscallsFromDisk(PVOID pNtdll) {{
+    typedef NTSTATUS (NTAPI *pfnNtOpenSection)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+    typedef NTSTATUS (NTAPI *pfnNtMapViewOfSection)(HANDLE, HANDLE, PVOID*, ULONG_PTR, SIZE_T, PLARGE_INTEGER, PSIZE_T, DWORD, ULONG, ULONG);
+    typedef NTSTATUS (NTAPI *pfnNtUnmapViewOfSection)(HANDLE, PVOID);
+    typedef NTSTATUS (NTAPI *pfnNtClose)(HANDLE);
+
+    pfnNtOpenSection      pOpen   = (pfnNtOpenSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtOpenSection'):08X}U);
+    pfnNtMapViewOfSection pMap    = (pfnNtMapViewOfSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtMapViewOfSection'):08X}U);
+    pfnNtUnmapViewOfSection pUnmap = (pfnNtUnmapViewOfSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtUnmapViewOfSection'):08X}U);
+    pfnNtClose            pClose  = (pfnNtClose){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtClose'):08X}U);
+
+    if (!pOpen || !pMap || !pUnmap || !pClose)
+        return FALSE;
+
+    /* Open \\KnownDlls\\ntdll.dll -- on x64 Windows this is the 64-bit image,
+     * even when opened from a WoW64 process (object namespace not redirected). */
+    UNICODE_STRING usName;
+    usName.Length        = 20 * sizeof(WCHAR);
+    usName.MaximumLength = usName.Length + sizeof(WCHAR);
+    usName.Buffer        = L"\\\\KnownDlls\\\\ntdll.dll";
+
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(OBJECT_ATTRIBUTES);
+    oa.ObjectName = &usName;
+
+    HANDLE hSection = NULL;
+    NTSTATUS status = pOpen(&hSection, SECTION_MAP_READ | SECTION_MAP_EXECUTE, &oa);
+    if (!NT_SUCCESS(status))
+        return FALSE;
+
+    PVOID  pClean = NULL;
+    SIZE_T viewSize = 0;
+    status = pMap(hSection, (HANDLE)-1, &pClean, 0, 0, NULL, &viewSize, 1, 0, PAGE_READONLY);
+    if (!NT_SUCCESS(status)) {{
+        pClose(hSection);
+        return FALSE;
+    }}
+
+    /* Parse 64-bit PE explicitly -- we are 32-bit code reading a 64-bit image.
+     * IMAGE_NT_HEADERS64 and IMAGE_OPTIONAL_HEADER64 are always defined by
+     * the Windows SDK regardless of compilation target. */
+    PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)pClean;
+    IMAGE_NT_HEADERS64* pNt = (IMAGE_NT_HEADERS64*)((PBYTE)pClean + pDos->e_lfanew);
+
+    /* Verify this is actually a 64-bit image */
+    if (pNt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {{
+        pUnmap((HANDLE)-1, pClean);
+        pClose(hSection);
+        return FALSE;
+    }}
+
+    DWORD expRva = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+    PIMAGE_EXPORT_DIRECTORY pExp = (PIMAGE_EXPORT_DIRECTORY)((PBYTE)pClean + expRva);
+
+    PDWORD pFnArr = (PDWORD)((PBYTE)pClean + pExp->AddressOfFunctions);
+    PDWORD pNmArr = (PDWORD)((PBYTE)pClean + pExp->AddressOfNames);
+    PWORD  pOrArr = (PWORD )((PBYTE)pClean + pExp->AddressOfNameOrdinals);
+
+    for (DWORD fi = 0; fi < {p}FUNC_COUNT; fi++) {{
+        for (DWORD i = 0; i < pExp->NumberOfNames; i++) {{
+            const char* pName = (const char*)((PBYTE)pClean + pNmArr[i]);
+            if ({p}HashStr(pName) == {p}FuncHashes[fi]) {{
+                PBYTE pFn = (PBYTE)pClean + pFnArr[pOrArr[i]];
+                /* x64 SSN pattern: mov r10, rcx (4C 8B D1) ; mov eax, SSN (B8 xx xx 00 00) */
+                for (DWORD k = 0; k < 32; k++) {{
+                    if (pFn[k] == 0x4Cu && pFn[k+1u] == 0x8Bu &&
+                        pFn[k+2u] == 0xD1u && pFn[k+3u] == 0xB8u) {{
+                        DWORD ssn = (DWORD)pFn[k+4u] | ((DWORD)pFn[k+5u] << 8u);
+                        {p}SsnTable[fi] = {self._ssn_encrypt_expr(p, "ssn")};
+                        break;
+                    }}
+                }}
+                break;
+            }}
+        }}
+    }}
+
+    pUnmap((HANDLE)-1, pClean);
+    pClose(hSection);
+    return TRUE;
+}}"""
+
+    # -----------------------------------------------------------------------
     # NEW: RecycledGate - FreshyCalls + opcode validation
     # -----------------------------------------------------------------------
 
@@ -1365,7 +1470,7 @@ static BOOL {p}HWBreakpoint(PVOID pNtdll) {{
 
     def _c_static_resolution(self, p: str, n: int, func_names: list) -> str:
         ssns = self._get_static_ssns()
-        tbl = self._ssn_x64 if self.cfg.arch != Architecture.x86 else self._ssn_x86
+        tbl = self._ssn_x86 if self.cfg.arch == Architecture.x86 else self._ssn_x64
 
         # Build per-function build->ssn tables
         per_func = []
@@ -2011,16 +2116,28 @@ void {p}DecryptWideStringInPlace(wchar_t *buf, SIZE_T len) {{
             ResolutionMethod.RecycledGate:    f"return {p}RecycledGate(pNtdll);",
             ResolutionMethod.HWBreakpoint:    f"return {p}HWBreakpoint(pNtdll);",
         }
-        resolve_call = resolve_map[self.cfg.resolve]
+
+        is_wow64 = self.cfg.arch == Architecture.WoW64
+
+        # WoW64: dynamic resolution methods (FreshyCalls, HellsGate, etc.)
+        # operate on in-memory ntdll which is 32-bit in a WoW64 process.
+        # We always use SyscallsFromDisk to map the 64-bit ntdll from
+        # \KnownDlls\ and read x64 SSNs from it.
+        if is_wow64 and self.cfg.resolve != ResolutionMethod.Static:
+            resolve_call = f"return {p}SyscallsFromDisk(pNtdll);"
+        else:
+            resolve_call = resolve_map[self.cfg.resolve]
 
         gadget_pool = ""
-        if self.cfg.method == InvocationMethod.Randomized:
-            gadget_pool = f"\n    {p}BuildGadgetPool(pNtdll);"
-        elif self.cfg.method == InvocationMethod.CallStack:
-            gadget_pool = (
-                f"\n    {p}BuildGadgetPool(pNtdll);"
-                f"\n    {p}CollectFrameGadgets(pNtdll);"
-            )
+        # WoW64 uses Heaven's Gate (embedded only), no gadget pool needed
+        if not is_wow64:
+            if self.cfg.method == InvocationMethod.Randomized:
+                gadget_pool = f"\n    {p}BuildGadgetPool(pNtdll);"
+            elif self.cfg.method == InvocationMethod.CallStack:
+                gadget_pool = (
+                    f"\n    {p}BuildGadgetPool(pNtdll);"
+                    f"\n    {p}CollectFrameGadgets(pNtdll);"
+                )
 
         ntdll_needed = self.cfg.resolve != ResolutionMethod.Static
         ntdll_decl = f"    PVOID pNtdll = {p}GetNtdllBase();\n    if (!pNtdll) return FALSE;\n" if ntdll_needed else ""
@@ -2043,10 +2160,12 @@ BOOL {p}Initialize(VOID) {{
             return self._gen_asm_msvc_x64()
         elif self.cfg.arch == Architecture.x86:
             return self._gen_asm_msvc_x86()
+        elif self.cfg.arch == Architecture.WoW64:
+            return self._gen_asm_wow64_msvc()
         elif self.cfg.arch == Architecture.ARM64:
             return self._gen_asm_arm64_msvc()
         else:
-            return self._gen_asm_msvc_x64()  # WoW64 -> x64 stubs
+            return self._gen_asm_msvc_x64()
 
     def _gen_asm_msvc_x64(self) -> str:
         p = self.cfg.prefix
@@ -2321,6 +2440,102 @@ OPTION DOTNAME
     lea  edx, DWORD PTR [ebp+8]
     push edx                ; edx -> arg block
 {invoke}
+    pop  ebp
+    ret  {stack_arg_bytes}
+{fname} ENDP
+
+"""
+
+    def _gen_asm_wow64_msvc(self) -> str:
+        """WoW64 Heaven's Gate stubs: 32-bit entry, transition to 64-bit, syscall, return."""
+        p = self.cfg.prefix
+
+        header = f"""\
+; {self.cfg.out_file}.wow64.asm -- generated by SysWhispers4
+; WoW64 Heaven's Gate syscall stubs
+; Method : embedded (Heaven's Gate)  |  Arch : WoW64 / MASM (ml.exe)
+;
+; These stubs run in a 32-bit process on 64-bit Windows.
+; They transition to 64-bit mode (CS=0x33) via retf, execute the
+; x64 syscall instruction, then transition back to 32-bit (CS=0x23).
+; SSNs are x64 syscall numbers.
+
+.686
+.model flat, stdcall
+OPTION DOTNAME
+
+.data
+    EXTERN {p}SsnTable:DWORD
+
+.code
+
+"""
+        if self.cfg.encrypt_ssn:
+            key = self._xor_key()
+            header = header.rstrip("\n") + f"\n{p}XOR_KEY EQU 0{key:08X}h\n\n"
+
+        stubs = []
+        for idx, proto in enumerate(self._prototypes):
+            fname = f"{p}{proto.name}"
+            n_args = proto.param_count
+            stubs.append(self._asm_wow64_stub(fname, idx, p, n_args))
+
+        return header + "\n".join(stubs) + "\nEND\n"
+
+    def _asm_wow64_stub(self, fname: str, idx: int, p: str, n_args: int) -> str:
+        stack_arg_bytes = n_args * 4
+
+        if self.cfg.encrypt_ssn:
+            load_ssn = (
+                f"    mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]\n"
+                f"    xor  eax, {p}XOR_KEY"
+            )
+        else:
+            load_ssn = f"    mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]"
+
+        # Heaven's Gate pattern:
+        #   1. While in 32-bit mode, push return frame (offset+CS=0x23)
+        #      onto the stack for the return retf
+        #   2. Transition to 64-bit via push 0x33 / call $+5 / add / retf
+        #   3. Execute syscall (eax=SSN, edx=arg pointer)
+        #   4. retf pops the pre-pushed frame -> back to 32-bit
+        #
+        # WoW64 kernel entry: eax = SSN, edx = pointer to arg block
+        # on the 32-bit stack (same ABI as int 2Eh / sysenter).
+
+        # Use index-based labels for uniqueness across stubs
+        delta = f"@w{idx}d"
+        back  = f"@w{idx}b"
+
+        return f"""\
+; --- {fname} (WoW64 Heaven's Gate) ---
+{fname} PROC
+    push ebp
+    mov  ebp, esp
+{load_ssn}
+    lea  edx, DWORD PTR [ebp+8]  ; edx -> arg block
+    ; ----- Prepare return frame for retf back to 32-bit -----
+    ; Push CS=0x23 + return offset onto stack BEFORE going 64-bit.
+    ; retf in 64-bit mode (opcode CB, no REX.W) pops 4-byte offset + 4-byte CS.
+    call {delta}
+{delta}:
+    pop  ecx
+    add  ecx, ({back} - {delta})  ; ecx = address of {back}
+    push 023h                     ; return CS  (32-bit segment)
+    push ecx                      ; return EIP (address of {back})
+    ; Stack: [ESP]=back_addr, [ESP+4]=0x23, [ESP+8]=saved_ebp, ...
+    ; ----- Transition to 64-bit mode (Heaven's Gate) -----
+    push 033h                     ; x64 code segment selector
+    db   0E8h, 0, 0, 0, 0        ; call $+5 (push EIP of next instr)
+    add  DWORD PTR [esp], 5       ; adjust past the retf below
+    retf                          ; far return -> 64-bit mode, CS=0x33
+    ; Stack now: [ESP]=back_addr, [ESP+4]=0x23
+    ; ----- Now executing in 64-bit mode -----
+    db   0Fh, 05h                 ; syscall (eax=SSN, edx=arg ptr)
+    ; ----- Return to 32-bit mode -----
+    retf                          ; pops back_addr (4B) + CS=0x23 (4B)
+{back}:
+    ; ----- Back in 32-bit mode -----
     pop  ebp
     ret  {stack_arg_bytes}
 {fname} ENDP
