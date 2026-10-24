@@ -21,6 +21,7 @@ class Compiler(str, Enum):
     MSVC  = "msvc"    # ml64.exe / MASM
     MinGW = "mingw"   # x86_64-w64-mingw32-gcc (GAS inline asm)
     Clang = "clang"   # clang-cl / GAS inline asm
+    NASM  = "nasm"    # nasm (NASM syntax .nasm files)
 
     def __str__(self) -> str:
         return self.value
@@ -121,6 +122,7 @@ class GeneratorConfig:
     anti_debug:   bool = False    # Anti-debugging checks (PEB, timing, instrumentation)
     sleep_encrypt: bool = False   # Sleep obfuscation with memory encryption (Ekko-style)
     string_encrypt: bool = False  # Compile-time string encryption
+    module_stomp:  bool = False   # Copy stubs into .text of a loaded signed DLL
     hash_algo:     HashAlgorithm = HashAlgorithm.DJB2
 
     # Static resolution: path to syscall table JSON
@@ -140,6 +142,8 @@ class GeneratorConfig:
         }
         if self.compiler == Compiler.MSVC:
             files[f"{base}.asm"] = "asm"
+        elif self.compiler == Compiler.NASM:
+            files[f"{base}.nasm"] = "nasm"
         else:
             # MinGW/Clang use inline assembly embedded in C
             pass

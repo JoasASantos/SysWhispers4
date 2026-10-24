@@ -179,7 +179,7 @@ Examples:
         choices=[c.value for c in Compiler],
         default=Compiler.MSVC.value,
         metavar="COMPILER",
-        help="Compiler: msvc (default, MASM), mingw (GAS inline), clang (GAS inline)",
+        help="Compiler: msvc (default, MASM), mingw (GAS inline), clang (GAS inline), nasm (NASM syntax)",
     )
 
     # ---- Techniques -------------------------------------------------------
@@ -246,6 +246,11 @@ Examples:
         "--string-encrypt",
         action="store_true",
         help="Compile-time string encryption (XOR-encoded string literals decoded at runtime)",
+    )
+    eva.add_argument(
+        "--module-stomp",
+        action="store_true",
+        help="Module stomping: relocate stubs into .text of a signed DLL (defeats unbacked-RX detection)",
     )
     eva.add_argument(
         "--hash-algo",
@@ -367,6 +372,7 @@ def main() -> None:
         anti_debug      = args.anti_debug,
         sleep_encrypt   = args.sleep_encrypt,
         string_encrypt  = args.string_encrypt,
+        module_stomp    = args.module_stomp,
         hash_algo       = HashAlgorithm(args.hash_algo),
         syscall_table   = args.syscall_table,
     )

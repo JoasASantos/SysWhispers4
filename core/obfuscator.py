@@ -227,6 +227,39 @@ class Obfuscator:
         """Deprecated alias for junk_instructions_gas."""
         return self.junk_instructions_gas(count)
 
+    def junk_instructions_nasm(self, count: int | None = None) -> str:
+        """Generate junk instructions in NASM syntax (0x prefix for hex)."""
+        n = count if count is not None else self._rng.randint(2, 5)
+
+        imm8 = lambda: self._rng.randint(1, 0xFF)
+        imm32 = lambda: self._rng.randint(0x10000, 0x7FFFFFFF)
+
+        patterns = [
+            lambda: f"add r11d, 0x{imm8():02X}\n    sub r11d, 0x{imm8():02X}",
+            lambda: f"sub r11d, 0x{imm8():02X}\n    add r11d, 0x{imm8():02X}",
+            lambda: (lambda s=self._rng.randint(1, 15):
+                     f"rol r11d, {s}\n    ror r11d, {s}")(),
+            lambda: (lambda s=self._rng.randint(1, 15):
+                     f"ror r11d, {s}\n    rol r11d, {s}")(),
+            lambda: (lambda v=imm32():
+                     f"xor r11d, 0x{v:08X}\n    xor r11d, 0x{v:08X}")(),
+            lambda: f"xor r11d, r11d\n    jnz $+2",
+            lambda: f"or r11d, 0xFFFFFFFF\n    jz $+2",
+            lambda: "push r11\n    pop r11",
+            lambda: "bswap r11d\n    bswap r11d",
+            lambda: "not r11d\n    not r11d",
+            lambda: "neg r11d\n    neg r11d",
+            lambda: f"mov r11d, 0x{imm32():08X}\n    cmp r11d, 0x{imm32():08X}",
+            lambda: (lambda d=self._rng.randint(0x10, 0x7F):
+                     f"lea r11, [r11 + {d}]\n    lea r11, [r11 - {d}]")(),
+            lambda: (lambda s=self._rng.randint(1, 7):
+                     f"shl r11d, {s}\n    shr r11d, {s}")(),
+            lambda: f"test r11d, 0x{imm32():08X}",
+        ]
+
+        selected = self._rng.choices(patterns, k=n)
+        return "\n    ".join(p() for p in selected)
+
     # -----------------------------------------------------------------------
     # Egg value generation
     # -----------------------------------------------------------------------
@@ -246,6 +279,12 @@ class Obfuscator:
         """Return MASM DB directive for the 8-byte egg."""
         b = list(egg.to_bytes(8, "little"))
         return "DB " + ", ".join(f"{x:02X}h" for x in b)
+
+    @staticmethod
+    def egg_nasm_bytes(egg: int) -> str:
+        """Return NASM db directive for the 8-byte egg."""
+        b = list(egg.to_bytes(8, "little"))
+        return "db " + ", ".join(f"0x{x:02X}" for x in b)
 
     # -----------------------------------------------------------------------
     # Guard page token generation (for anti-debug)
