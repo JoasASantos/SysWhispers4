@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 import textwrap
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -34,10 +35,11 @@ class SysWhispers4:
 
     def __init__(self, config: GeneratorConfig):
         self.cfg = config
-        self.obf = Obfuscator(seed=random.randint(0, 0xFFFFFFFF))
+        self.obf = Obfuscator(seed=int.from_bytes(os.urandom(4), "little"))
         self._prototypes: List[SyscallPrototype] = []
         self._ssn_x64: dict = {}
         self._ssn_x86: dict = {}
+        self._cached_xor_key: Optional[int] = None
 
     # -----------------------------------------------------------------------
     # Public API
@@ -138,7 +140,7 @@ class SysWhispers4:
     # -----------------------------------------------------------------------
 
     def _xor_key(self) -> int:
-        if not hasattr(self, "_cached_xor_key"):
+        if self._cached_xor_key is None:
             self._cached_xor_key = self.obf.generate_xor_key() if self.cfg.encrypt_ssn else 0
         return self._cached_xor_key
 
@@ -157,15 +159,21 @@ class SysWhispers4:
         """For static resolution: list of SSNs per function (None if unknown)."""
         tbl = self._ssn_x86 if self.cfg.arch == Architecture.x86 else self._ssn_x64
         result = []
+        missing = []
         for proto in self._prototypes:
             entry = tbl.get(proto.name)
             if entry:
                 numeric = {int(k): v for k, v in entry.items() if k.isdigit()}
-                # Use highest available build
                 ssn = numeric[max(numeric)] if numeric else None
             else:
                 ssn = None
+            if ssn is None:
+                missing.append(proto.name)
             result.append(ssn)
+        if missing:
+            print(f"[!] Warning: {len(missing)} function(s) have no static SSN and will "
+                  f"need runtime fallback: {', '.join(missing[:5])}"
+                  f"{'...' if len(missing) > 5 else ''}", file=sys.stderr)
         return result
 
     def _static_ssn_table_c(self) -> str:
@@ -624,7 +632,13 @@ EXTERN_C BOOL {p}Initialize(VOID);
         else:
             xor_macro = f"\n#define {p}DECRYPT(v) (v)\n"
 
-        gadget_pool_size = 64 if self.cfg.method == InvocationMethod.Randomized else 0
+        gadget_defs = ""
+        if self.cfg.method == InvocationMethod.Randomized:
+            gadget_pool_size = 64
+            gadget_defs = (
+                f"#define {p}GADGET_POOL   {gadget_pool_size}U\n"
+                f"#define {p}GADGET_MASK   {gadget_pool_size - 1}U  /* pool must be power of 2 */\n"
+            )
 
         return f"""\
 /* =========================================================================
@@ -632,9 +646,7 @@ EXTERN_C BOOL {p}Initialize(VOID);
  * ========================================================================= */
 #define {p}FUNC_COUNT    {n}U
 #define {p}MAX_EXPORTS   1024U
-#define {p}GADGET_POOL   {gadget_pool_size}U
-#define {p}GADGET_MASK   ({gadget_pool_size - 1}U)  /* pool must be power of 2 */
-{xor_macro}
+{gadget_defs}{xor_macro}
 /* DJB2 hashes of function names (compile-time) */
 static const DWORD {p}FuncHashes[{p}FUNC_COUNT] = {{
     {hash_entries}
@@ -1084,9 +1096,9 @@ static BOOL {p}SyscallsFromDisk(PVOID pNtdll) {{
 
     /* Open \\KnownDlls\\ntdll.dll */
     UNICODE_STRING usName;
-    usName.Length        = 20 * sizeof(WCHAR);  /* wcslen(L"\\KnownDlls\\ntdll.dll") */
-    usName.MaximumLength = usName.Length + sizeof(WCHAR);
     usName.Buffer        = L"\\\\KnownDlls\\\\ntdll.dll";
+    usName.Length        = (USHORT)(sizeof(L"\\\\KnownDlls\\\\ntdll.dll") - sizeof(WCHAR));
+    usName.MaximumLength = usName.Length + sizeof(WCHAR);
 
     OBJECT_ATTRIBUTES oa;
     memset(&oa, 0, sizeof(oa));
@@ -1132,17 +1144,7 @@ static BOOL {p}SyscallsFromDisk(PVOID pNtdll) {{
                         break;
                     }}
                 }}
-                /* For indirect: find syscall;ret in the REAL (in-memory) ntdll
-                 * because we need to jmp there at call time */
-                PBYTE pReal = (PBYTE){p}GetProcByHash(pNtdll, {p}FuncHashes[fi]);
-                if (pReal) {{
-                    for (DWORD sk = 0; sk < 32; sk++) {{
-                        if (pReal[sk] == 0x0Fu && pReal[sk+1u] == 0x05u) {{
-                            /* Found syscall gadget in real ntdll (may be after hook jmp) */
-                            break;
-                        }}
-                    }}
-                }}
+                {self._from_disk_indirect_gadget_snippet(p)}
                 break;
             }}
         }}
@@ -1184,9 +1186,9 @@ static BOOL {p}SyscallsFromDisk(PVOID pNtdll) {{
     /* Open \\KnownDlls\\ntdll.dll -- on x64 Windows this is the 64-bit image,
      * even when opened from a WoW64 process (object namespace not redirected). */
     UNICODE_STRING usName;
-    usName.Length        = 20 * sizeof(WCHAR);
-    usName.MaximumLength = usName.Length + sizeof(WCHAR);
     usName.Buffer        = L"\\\\KnownDlls\\\\ntdll.dll";
+    usName.Length        = (USHORT)(sizeof(L"\\\\KnownDlls\\\\ntdll.dll") - sizeof(WCHAR));
+    usName.MaximumLength = usName.Length + sizeof(WCHAR);
 
     OBJECT_ATTRIBUTES oa;
     memset(&oa, 0, sizeof(oa));
@@ -1544,6 +1546,23 @@ static BOOL {p}StaticResolve(VOID) {{
                 }}
             }}"""
 
+    def _from_disk_indirect_gadget_snippet(self, p: str) -> str:
+        if self.cfg.method not in (InvocationMethod.Indirect, InvocationMethod.Randomized,
+                                    InvocationMethod.CallStack):
+            return ""
+        return f"""\
+                /* For indirect: find syscall;ret in the REAL (in-memory) ntdll
+                 * because we need to jmp there at call time */
+                PBYTE pReal = (PBYTE){p}GetProcByHash(pNtdll, {p}FuncHashes[fi]);
+                if (pReal) {{
+                    for (DWORD sk = 0; sk < 32; sk++) {{
+                        if (pReal[sk] == 0x0Fu && pReal[sk+1u] == 0x05u) {{
+                            {p}SyscallAddrTable[fi] = (PVOID)(pReal + sk);
+                            break;
+                        }}
+                    }}
+                }}"""
+
     # -----------------------------------------------------------------------
     # Indirect / randomized gadget finder
     # -----------------------------------------------------------------------
@@ -1817,9 +1836,9 @@ BOOL {p}UnhookNtdll(VOID) {{
 
     /* Open clean ntdll from KnownDlls */
     UNICODE_STRING usName;
-    usName.Length        = 20 * sizeof(WCHAR);  /* wcslen(L"\\KnownDlls\\ntdll.dll") */
-    usName.MaximumLength = usName.Length + sizeof(WCHAR);
     usName.Buffer        = L"\\\\KnownDlls\\\\ntdll.dll";
+    usName.Length        = (USHORT)(sizeof(L"\\\\KnownDlls\\\\ntdll.dll") - sizeof(WCHAR));
+    usName.MaximumLength = usName.Length + sizeof(WCHAR);
 
     OBJECT_ATTRIBUTES oa;
     memset(&oa, 0, sizeof(oa));
@@ -2059,17 +2078,18 @@ VOID {p}SleepEncrypt(DWORD dwMilliseconds) {{
         return;
     }}
 
+    /* Track encryption state with a flag (not heuristic opcode checks) */
+    static volatile LONG {p}TextIsEncrypted = 0;
+
     /* Encrypt .text section */
     {p}XorTextSection();
+    InterlockedExchange(&{p}TextIsEncrypted, 1);
 
     /* Sleep in alertable state (allows APC to fire) */
     SleepEx(dwMilliseconds, TRUE);
 
     /* In case APC didn't fire, decrypt manually */
-    /* (Check a canary byte to see if still encrypted) */
-    PBYTE pCheck = (PBYTE)&{p}SleepEncrypt;
-    if (*pCheck != 0x48 && *pCheck != 0x40 && *pCheck != 0x55) {{
-        /* Likely still encrypted */
+    if (InterlockedCompareExchange(&{p}TextIsEncrypted, 0, 1) == 1) {{
         {p}XorTextSection();
     }}
 

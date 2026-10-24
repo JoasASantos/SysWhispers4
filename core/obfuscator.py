@@ -74,7 +74,8 @@ class Obfuscator:
     @staticmethod
     def encrypt_string_c(s: str, key: int, var_name: str) -> str:
         """Return C code for an XOR-encrypted string with inline decryptor."""
-        encoded = [((b ^ key) & 0xFF) for b in s.encode("ascii")]
+        raw = s.encode("utf-8")
+        encoded = [((b ^ key) & 0xFF) for b in raw]
         encoded.append(key)  # null terminator: 0x00 ^ key = key
         hex_arr = ", ".join(f"0x{b:02X}" for b in encoded)
         return (
