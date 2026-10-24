@@ -52,6 +52,7 @@ Built on the lineage of [SysWhispers](https://github.com/jthuraisamy/SysWhispers
 | ntdll unhooking (remap from KnownDlls) | ❌ | ❌ | ❌ | **✅ New** |
 | Anti-debugging (6 checks) | ❌ | ❌ | ❌ | **✅ New** |
 | Sleep encryption (Ekko-style) | ❌ | ❌ | ❌ | **✅ New** |
+| VEH-based on-demand memory encryption | ❌ | ❌ | ❌ | **✅ New** |
 | String encryption (XOR literals) | ❌ | ❌ | ❌ | **✅ New** |
 | Call stack spoofing (full RBP chain) | ❌ | ❌ | ❌ | **✅ New** |
 | **Syscall Table** | | | | |
@@ -196,6 +197,7 @@ Defeats:
 | ntdll Unhooking | `--unhook-ntdll` | Remap clean `.text` from `\KnownDlls\` |
 | Anti-Debug | `--anti-debug` | 6 detection checks (PEB, timing, heap, etc.) |
 | Sleep Encryption | `--sleep-encrypt` | Ekko-style XOR `.text` during sleep |
+| VEH Memory Encryption | `--veh-encrypt` | On-demand page-fault-driven decrypt/re-encrypt |
 | String Encryption | `--string-encrypt` | XOR-encoded string literals decoded at runtime |
 
 ---
@@ -283,6 +285,7 @@ Evasion / Obfuscation:
   --unhook-ntdll           Include ntdll unhooking (remap from KnownDlls)
   --anti-debug             Include anti-debugging checks (6 techniques)
   --sleep-encrypt          Include Ekko-style sleep encryption
+  --veh-encrypt            VEH-based on-demand memory encryption (page fault driven)
   --string-encrypt         XOR-encoded string literals decoded at runtime
 
 Output:
@@ -691,6 +694,7 @@ Unauthorized use against systems you do not own is illegal in most jurisdictions
 | [Ekko Sleep Obfuscation](https://github.com/Cracked5pider/Ekko) | C5pider |
 | [LayeredSyscall](https://whiteknightlabs.com/2024/07/31/layeredsyscall-abusing-veh-to-bypass-edrs/) | White Knight Labs |
 | [Call Stack Spoofing](https://labs.withsecure.com/publications/spoofing-call-stacks-to-confuse-edrs) | WithSecure Labs |
+| [VEH-based On-Demand Memory Encryption](https://github.com/xop01) | xop ([@xopp1e](https://x.com/xopp1e)) |
 | [SysWhispers Evolution Analysis](https://sudosiddharths.medium.com/analyzing-the-evolution-and-execution-of-syswhispers-1-3-74cbbcdaf397) | Siddharth S. |
 
 ---
