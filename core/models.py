@@ -53,6 +53,17 @@ class ResolutionMethod(str, Enum):
         return self.value
 
 
+class HashAlgorithm(str, Enum):
+    """Hash algorithm for runtime function name resolution."""
+    DJB2  = "djb2"
+    CRC32 = "crc32"
+    FNV1A = "fnv1a"
+    ROR13 = "ror13"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass
 class SyscallParam:
     name:       str
@@ -110,6 +121,7 @@ class GeneratorConfig:
     anti_debug:   bool = False    # Anti-debugging checks (PEB, timing, instrumentation)
     sleep_encrypt: bool = False   # Sleep obfuscation with memory encryption (Ekko-style)
     string_encrypt: bool = False  # Compile-time string encryption
+    hash_algo:     HashAlgorithm = HashAlgorithm.DJB2
 
     # Static resolution: path to syscall table JSON
     syscall_table: Optional[str] = None

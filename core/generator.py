@@ -19,11 +19,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .models import (
-    Architecture, Compiler, GeneratorConfig,
+    Architecture, Compiler, GeneratorConfig, HashAlgorithm,
     InvocationMethod, ResolutionMethod, SyscallParam, SyscallPrototype,
 )
 from .obfuscator import Obfuscator
-from .utils import djb2_hash, load_prototypes, load_ssn_table_x64, load_ssn_table_x86
+from .utils import (
+    djb2_hash, crc32_hash, fnv1a_hash, ror13_hash,
+    load_prototypes, load_ssn_table_x64, load_ssn_table_x86,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +43,16 @@ class SysWhispers4:
         self._ssn_x64: dict = {}
         self._ssn_x86: dict = {}
         self._cached_xor_key: Optional[int] = None
+        self._hash_map = {
+            HashAlgorithm.DJB2:  djb2_hash,
+            HashAlgorithm.CRC32: crc32_hash,
+            HashAlgorithm.FNV1A: fnv1a_hash,
+            HashAlgorithm.ROR13: ror13_hash,
+        }
+
+    def _hash(self, name: str) -> int:
+        """Hash a function name using the configured algorithm."""
+        return self._hash_map[self.cfg.hash_algo](name)
 
     # -----------------------------------------------------------------------
     # Public API
@@ -537,7 +550,7 @@ EXTERN_C BOOL {p}Initialize(VOID);
         p = self.cfg.prefix
         n = len(self._prototypes)
         func_names = [proto.name for proto in self._prototypes]
-        hashes = [djb2_hash(name) for name in func_names]
+        hashes = [self._hash(name) for name in func_names]
 
         sections = [self._c_file_header(header_file)]
         sections.append(self._c_constants(p, n, hashes, func_names))
@@ -624,10 +637,16 @@ EXTERN_C BOOL {p}Initialize(VOID);
         xor_macro = ""
         if self.cfg.encrypt_ssn:
             key = self._xor_key()
+            key_a = int.from_bytes(os.urandom(4), "little") | 1
+            key_b = key ^ key_a
+            self._key_parts = (key_a, key_b)
             xor_macro = (
-                f"\n/* XOR key for SSN decryption */\n"
-                f"#define {p}XOR_KEY 0x{key:08X}U\n"
-                f"#define {p}DECRYPT(v) ((DWORD)((v) ^ {p}XOR_KEY))\n"
+                f"\n/* SSN decryption — key split across two volatile halves.\n"
+                f" * Neither half reveals the full key; compiler cannot fold them. */\n"
+                f"static const volatile DWORD {p}KP0 = 0x{key_a:08X}U;\n"
+                f"static const volatile DWORD {p}KP1 = 0x{key_b:08X}U;\n"
+                f"#define {p}XOR_KEY ({p}KP0 ^ {p}KP1)\n"
+                f"#define {p}DECRYPT(v) ((DWORD)((v) ^ ({p}KP0 ^ {p}KP1)))\n"
             )
         else:
             xor_macro = f"\n#define {p}DECRYPT(v) (v)\n"
@@ -647,7 +666,7 @@ EXTERN_C BOOL {p}Initialize(VOID);
 #define {p}FUNC_COUNT    {n}U
 #define {p}MAX_EXPORTS   1024U
 {gadget_defs}{xor_macro}
-/* DJB2 hashes of function names (compile-time) */
+/* {self.cfg.hash_algo.value.upper()} hashes of function names (compile-time) */
 static const DWORD {p}FuncHashes[{p}FUNC_COUNT] = {{
     {hash_entries}
 }};"""
@@ -670,15 +689,48 @@ static const DWORD {p}FuncHashes[{p}FUNC_COUNT] = {{
 DWORD  {p}SsnTable[{p}FUNC_COUNT];          /* SSN for each function */{addr_table}{gadget_pool}"""
 
     def _c_hash_function(self, p: str) -> str:
-        return f"""\
-/* =========================================================================
- *  DJB2 hash (matches compile-time hashes above)
- * ========================================================================= */
+        algo = self.cfg.hash_algo
+        if algo == HashAlgorithm.CRC32:
+            label = "CRC32"
+            body = f"""\
+static DWORD {p}HashStr(const char* s) {{
+    DWORD crc = 0xFFFFFFFFU;
+    while (*s) {{
+        crc ^= (unsigned char)*s++;
+        for (int i = 0; i < 8; i++)
+            crc = (crc >> 1) ^ (0xEDB88320U & (0U - (crc & 1U)));
+    }}
+    return crc ^ 0xFFFFFFFFU;
+}}"""
+        elif algo == HashAlgorithm.FNV1A:
+            label = "FNV-1a"
+            body = f"""\
+static DWORD {p}HashStr(const char* s) {{
+    DWORD h = 0x811C9DC5U;
+    while (*s) {{ h = (h ^ (unsigned char)*s++) * 0x01000193U; }}
+    return h;
+}}"""
+        elif algo == HashAlgorithm.ROR13:
+            label = "ROR-13"
+            body = f"""\
+static DWORD {p}HashStr(const char* s) {{
+    DWORD h = 0;
+    while (*s) {{ h = ((h >> 13) | (h << 19)) + (unsigned char)*s++; }}
+    return h;
+}}"""
+        else:
+            label = "DJB2"
+            body = f"""\
 static DWORD {p}HashStr(const char* s) {{
     DWORD h = 0x1505U;
     while (*s) {{ h = ((h << 5) + h) ^ (unsigned char)*s++; }}
     return h;
 }}"""
+        return f"""\
+/* =========================================================================
+ *  {label} hash (matches compile-time hashes above)
+ * ========================================================================= */
+{body}"""
 
     def _c_peb_ntdll(self, p: str) -> str:
         if self.cfg.arch in (Architecture.x86, Architecture.WoW64):
@@ -855,6 +907,32 @@ static BOOL {p}FreshyCalls(PVOID pNtdll) {{
         if self.cfg.encrypt_ssn:
             return f"({var}) ^ {p}XOR_KEY"
         return var
+
+    def _asm_load_ssn(self, idx: int, p: str, indent: str = "    ") -> str:
+        """MASM x64: load SSN from table, decrypt with split key if enabled."""
+        load = f"{indent}mov eax, DWORD PTR [{p}SsnTable + {idx * 4}]"
+        if not self.cfg.encrypt_ssn:
+            return load + "  ; load SSN"
+        return (
+            f"{load}  ; load encrypted SSN\n"
+            f"{indent}mov r11d, DWORD PTR [{p}KP0]\n"
+            f"{indent}xor r11d, DWORD PTR [{p}KP1]\n"
+            f"{indent}xor eax, r11d                           ; decrypt SSN"
+        )
+
+    def _asm_load_ssn_x86(self, idx: int, p: str, indent: str = "    ") -> str:
+        """MASM x86/WoW64: load SSN from table, decrypt with split key if enabled."""
+        load = f"{indent}mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]"
+        if not self.cfg.encrypt_ssn:
+            return load
+        return (
+            f"{load}\n"
+            f"{indent}push ecx\n"
+            f"{indent}mov  ecx, DWORD PTR [{p}KP0]\n"
+            f"{indent}xor  ecx, DWORD PTR [{p}KP1]\n"
+            f"{indent}xor  eax, ecx\n"
+            f"{indent}pop  ecx"
+        )
 
     def _c_hellsgate(self, p: str, n: int) -> str:
         addr_fill = self._indirect_addr_fill_snippet(p)
@@ -1086,10 +1164,10 @@ static BOOL {p}SyscallsFromDisk(PVOID pNtdll) {{
     typedef NTSTATUS (NTAPI *pfnNtClose)(HANDLE);
 
     /* Resolve needed functions from in-memory ntdll */
-    pfnNtOpenSection      pOpen   = (pfnNtOpenSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtOpenSection'):08X}U);
-    pfnNtMapViewOfSection pMap    = (pfnNtMapViewOfSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtMapViewOfSection'):08X}U);
-    pfnNtUnmapViewOfSection pUnmap = (pfnNtUnmapViewOfSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtUnmapViewOfSection'):08X}U);
-    pfnNtClose            pClose  = (pfnNtClose){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtClose'):08X}U);
+    pfnNtOpenSection      pOpen   = (pfnNtOpenSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtOpenSection'):08X}U);
+    pfnNtMapViewOfSection pMap    = (pfnNtMapViewOfSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtMapViewOfSection'):08X}U);
+    pfnNtUnmapViewOfSection pUnmap = (pfnNtUnmapViewOfSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtUnmapViewOfSection'):08X}U);
+    pfnNtClose            pClose  = (pfnNtClose){p}GetProcByHash(pNtdll, 0x{self._hash('NtClose'):08X}U);
 
     if (!pOpen || !pMap || !pUnmap || !pClose)
         return FALSE;
@@ -1175,10 +1253,10 @@ static BOOL {p}SyscallsFromDisk(PVOID pNtdll) {{
     typedef NTSTATUS (NTAPI *pfnNtUnmapViewOfSection)(HANDLE, PVOID);
     typedef NTSTATUS (NTAPI *pfnNtClose)(HANDLE);
 
-    pfnNtOpenSection      pOpen   = (pfnNtOpenSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtOpenSection'):08X}U);
-    pfnNtMapViewOfSection pMap    = (pfnNtMapViewOfSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtMapViewOfSection'):08X}U);
-    pfnNtUnmapViewOfSection pUnmap = (pfnNtUnmapViewOfSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtUnmapViewOfSection'):08X}U);
-    pfnNtClose            pClose  = (pfnNtClose){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtClose'):08X}U);
+    pfnNtOpenSection      pOpen   = (pfnNtOpenSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtOpenSection'):08X}U);
+    pfnNtMapViewOfSection pMap    = (pfnNtMapViewOfSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtMapViewOfSection'):08X}U);
+    pfnNtUnmapViewOfSection pUnmap = (pfnNtUnmapViewOfSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtUnmapViewOfSection'):08X}U);
+    pfnNtClose            pClose  = (pfnNtClose){p}GetProcByHash(pNtdll, 0x{self._hash('NtClose'):08X}U);
 
     if (!pOpen || !pMap || !pUnmap || !pClose)
         return FALSE;
@@ -1728,7 +1806,7 @@ BOOL {p}HatchEggs(VOID) {{
  * ========================================================================= */
 BOOL {p}PatchEtw(VOID) {{
     PVOID pNtdll  = {p}GetNtdllBase();
-    PVOID pTarget = {p}GetProcByHash(pNtdll, 0x{djb2_hash('EtwEventWrite'):08X}U);
+    PVOID pTarget = {p}GetProcByHash(pNtdll, 0x{self._hash('EtwEventWrite'):08X}U);
     if (!pTarget) return FALSE;
 
     DWORD oldProt = 0;
@@ -1772,7 +1850,7 @@ BOOL {p}PatchAmsi(VOID) {{
     }}
 
     /* Find AmsiScanBuffer using hash */
-    PVOID pTarget = {p}GetProcByHash((PVOID)hAmsi, 0x{djb2_hash('AmsiScanBuffer'):08X}U);
+    PVOID pTarget = {p}GetProcByHash((PVOID)hAmsi, 0x{self._hash('AmsiScanBuffer'):08X}U);
     if (!pTarget) return FALSE;
 
     DWORD oldProt = 0;
@@ -1827,10 +1905,10 @@ BOOL {p}UnhookNtdll(VOID) {{
     PVOID pNtdll = {p}GetNtdllBase();
     if (!pNtdll) return FALSE;
 
-    pfnNtOpenSection pOpen = (pfnNtOpenSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtOpenSection'):08X}U);
-    pfnNtMapViewOfSection pMap = (pfnNtMapViewOfSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtMapViewOfSection'):08X}U);
-    pfnNtUnmapViewOfSection pUnmap = (pfnNtUnmapViewOfSection){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtUnmapViewOfSection'):08X}U);
-    pfnNtClose pClose = (pfnNtClose){p}GetProcByHash(pNtdll, 0x{djb2_hash('NtClose'):08X}U);
+    pfnNtOpenSection pOpen = (pfnNtOpenSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtOpenSection'):08X}U);
+    pfnNtMapViewOfSection pMap = (pfnNtMapViewOfSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtMapViewOfSection'):08X}U);
+    pfnNtUnmapViewOfSection pUnmap = (pfnNtUnmapViewOfSection){p}GetProcByHash(pNtdll, 0x{self._hash('NtUnmapViewOfSection'):08X}U);
+    pfnNtClose pClose = (pfnNtClose){p}GetProcByHash(pNtdll, 0x{self._hash('NtClose'):08X}U);
 
     if (!pOpen || !pMap || !pUnmap || !pClose) return FALSE;
 
@@ -1948,7 +2026,7 @@ BOOL {p}AntiDebugCheck(VOID) {{
         HANDLE, DWORD, PVOID, ULONG, PULONG);
     PVOID pNtdll = {p}GetNtdllBase();
     pfnNtQueryInformationProcess pQip = (pfnNtQueryInformationProcess)
-        {p}GetProcByHash(pNtdll, 0x{djb2_hash('NtQueryInformationProcess'):08X}U);
+        {p}GetProcByHash(pNtdll, 0x{self._hash('NtQueryInformationProcess'):08X}U);
     if (pQip) {{
         DWORD_PTR debugPort = 0;
         NTSTATUS status = pQip((HANDLE)-1, 7 /* ProcessDebugPort */,
@@ -2101,24 +2179,38 @@ VOID {p}SleepEncrypt(DWORD dwMilliseconds) {{
     # -----------------------------------------------------------------------
 
     def _c_string_encrypt(self, p: str) -> str:
-        key = random.randint(0x01, 0xFF)
+        rc4_key = self.obf.generate_rc4_key(16)
+        key_hex = ", ".join(f"0x{b:02X}" for b in rc4_key)
         return f"""\
 /* =========================================================================
- *  Compile-time String Encryption
- *  Strings are XOR-encoded at build time; decoded once at first use.
+ *  String Encryption (RC4)
+ *  Strings are RC4-encrypted at build time; decoded once at first use.
  * ========================================================================= */
-#define {p}STR_XOR_KEY  0x{key:02X}U
+static const BYTE {p}STR_KEY[16] = {{ {key_hex} }};
+
+static void {p}RC4Decrypt(BYTE *data, SIZE_T dataLen, const BYTE *key, SIZE_T keyLen) {{
+    BYTE S[256], tmp;
+    int i, j;
+    for (i = 0; i < 256; i++) S[i] = (BYTE)i;
+    for (i = 0, j = 0; i < 256; i++) {{
+        j = (j + S[i] + key[i % keyLen]) & 0xFF;
+        tmp = S[i]; S[i] = S[j]; S[j] = tmp;
+    }}
+    i = 0; j = 0;
+    for (SIZE_T n = 0; n < dataLen; n++) {{
+        i = (i + 1) & 0xFF;
+        j = (j + S[i]) & 0xFF;
+        tmp = S[i]; S[i] = S[j]; S[j] = tmp;
+        data[n] ^= S[(S[i] + S[j]) & 0xFF];
+    }}
+}}
 
 void {p}DecryptStringInPlace(char *buf, SIZE_T len) {{
-    for (SIZE_T i = 0; i < len; i++)
-        buf[i] ^= (char)({p}STR_XOR_KEY ^ (BYTE)(i & 0xFF));
+    {p}RC4Decrypt((BYTE *)buf, len, {p}STR_KEY, sizeof({p}STR_KEY));
 }}
 
 void {p}DecryptWideStringInPlace(wchar_t *buf, SIZE_T len) {{
-    BYTE *raw = (BYTE *)buf;
-    SIZE_T byteLen = len * sizeof(wchar_t);
-    for (SIZE_T i = 0; i < byteLen; i++)
-        raw[i] ^= (BYTE)({p}STR_XOR_KEY ^ (BYTE)(i & 0xFF));
+    {p}RC4Decrypt((BYTE *)buf, len * sizeof(wchar_t), {p}STR_KEY, sizeof({p}STR_KEY));
 }}"""
 
     # -----------------------------------------------------------------------
@@ -2223,28 +2315,35 @@ OPTION DOTNAME
             )
 
         if self.cfg.encrypt_ssn:
-            key = self._xor_key()
-            header += f"\n{p}XOR_KEY EQU 0{key:08X}h\n"
+            header += (
+                f"\n    EXTERN {p}KP0:DWORD\n"
+                f"    EXTERN {p}KP1:DWORD\n"
+            )
 
         header += "\n.code\n\n"
 
         stubs = []
         for idx, proto in enumerate(self._prototypes):
             fname = f"{p}{proto.name}"
-            junk = f"    {self.obf.junk_nops()}\n" if self.cfg.obfuscate else ""
+            if self.cfg.obfuscate:
+                junk = f"    {self.obf.junk_instructions()}\n"
+                junk2 = f"    {self.obf.junk_instructions(self.obf._rng.randint(1, 3))}\n" if self.obf._rng.random() > 0.3 else ""
+            else:
+                junk = ""
+                junk2 = ""
 
             if method == InvocationMethod.Embedded:
-                stub = self._asm_x64_embedded(fname, idx, p, junk)
+                stub = self._asm_x64_embedded(fname, idx, p, junk, junk2)
             elif method == InvocationMethod.Indirect:
-                stub = self._asm_x64_indirect(fname, idx, p, junk)
+                stub = self._asm_x64_indirect(fname, idx, p, junk, junk2)
             elif method == InvocationMethod.Randomized:
-                stub = self._asm_x64_randomized(fname, idx, p, junk)
+                stub = self._asm_x64_randomized(fname, idx, p, junk, junk2)
             elif method == InvocationMethod.Egg:
-                stub = self._asm_x64_egg(fname, idx, p, egg_val, junk)
+                stub = self._asm_x64_egg(fname, idx, p, egg_val, junk, junk2)
             elif method == InvocationMethod.CallStack:
-                stub = self._asm_x64_callstack(fname, idx, p, junk)
+                stub = self._asm_x64_callstack(fname, idx, p, junk, junk2)
             else:
-                stub = self._asm_x64_embedded(fname, idx, p, junk)
+                stub = self._asm_x64_embedded(fname, idx, p, junk, junk2)
 
             stubs.append(stub)
 
@@ -2253,54 +2352,35 @@ OPTION DOTNAME
 
         return header + "\n".join(stubs) + "\nEND\n"
 
-    def _asm_x64_embedded(self, fname: str, idx: int, p: str, junk: str) -> str:
-        decrypt = f"{p}DECRYPT" if self.cfg.encrypt_ssn else ""
-        if self.cfg.encrypt_ssn:
-            load_ssn = (
-                f"    mov eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; load encrypted SSN\n"
-                f"    xor eax, {p}XOR_KEY                           ; decrypt"
-            )
-        else:
-            load_ssn = f"    mov eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; load SSN"
+    def _asm_x64_embedded(self, fname: str, idx: int, p: str, junk: str, junk2: str = "") -> str:
+        load_ssn = self._asm_load_ssn(idx, p)
 
         return f"""\
 ; --- {fname} (direct/embedded syscall) ---
 {fname} PROC
     mov r10, rcx                            ; syscall ABI: arg1 -> r10
 {junk}{load_ssn}
-    syscall
+{junk2}    syscall
     ret
 {fname} ENDP
 
 """
 
-    def _asm_x64_indirect(self, fname: str, idx: int, p: str, junk: str) -> str:
-        if self.cfg.encrypt_ssn:
-            load_ssn = (
-                f"    mov eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; load encrypted SSN\n"
-                f"    xor eax, {p}XOR_KEY                           ; decrypt"
-            )
-        else:
-            load_ssn = f"    mov eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; load SSN"
+    def _asm_x64_indirect(self, fname: str, idx: int, p: str, junk: str, junk2: str = "") -> str:
+        load_ssn = self._asm_load_ssn(idx, p)
 
         return f"""\
 ; --- {fname} (indirect: jmp to syscall;ret in ntdll) ---
 {fname} PROC
     mov r10, rcx                            ; syscall ABI: arg1 -> r10
 {junk}{load_ssn}
-    jmp QWORD PTR [{p}SyscallAddrTable + {idx * 8}]     ; -> ntdll gadget
+{junk2}    jmp QWORD PTR [{p}SyscallAddrTable + {idx * 8}]     ; -> ntdll gadget
 {fname} ENDP
 
 """
 
-    def _asm_x64_randomized(self, fname: str, idx: int, p: str, junk: str) -> str:
-        if self.cfg.encrypt_ssn:
-            load_ssn = (
-                f"    mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; encrypted SSN\n"
-                f"    xor  eax, {p}XOR_KEY                           ; decrypt"
-            )
-        else:
-            load_ssn = f"    mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; eax = SSN"
+    def _asm_x64_randomized(self, fname: str, idx: int, p: str, junk: str, junk2: str = "") -> str:
+        load_ssn = self._asm_load_ssn(idx, p, indent="    ")
 
         return f"""\
 ; --- {fname} (randomized indirect: random ntdll syscall;ret gadget) ---
@@ -2315,20 +2395,14 @@ OPTION DOTNAME
     mov  rcx, QWORD PTR [rcx + rax*8]      ; rcx = random gadget address
     mov  rdx, r11                           ; restore arg2
 {load_ssn}
-    jmp  rcx                                ; -> random ntdll syscall;ret
+{junk2}    jmp  rcx                                ; -> random ntdll syscall;ret
 {fname} ENDP
 
 """
 
-    def _asm_x64_egg(self, fname: str, idx: int, p: str, egg: int, junk: str) -> str:
+    def _asm_x64_egg(self, fname: str, idx: int, p: str, egg: int, junk: str, junk2: str = "") -> str:
         egg_bytes = Obfuscator.egg_asm_bytes(egg)
-        if self.cfg.encrypt_ssn:
-            load_ssn = (
-                f"    mov eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; encrypted SSN\n"
-                f"    xor eax, {p}XOR_KEY                           ; decrypt"
-            )
-        else:
-            load_ssn = f"    mov eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; load SSN"
+        load_ssn = self._asm_load_ssn(idx, p)
 
         return f"""\
 ; --- {fname} (egg: placeholder replaced with syscall at runtime) ---
@@ -2336,20 +2410,14 @@ OPTION DOTNAME
 {fname} PROC
     mov r10, rcx                            ; syscall ABI: arg1 -> r10
 {junk}{load_ssn}
-    {egg_bytes}           ; EGG -- will become: syscall + 6 NOPs
+{junk2}    {egg_bytes}           ; EGG -- will become: syscall + 6 NOPs
     ret
 {fname} ENDP
 
 """
 
-    def _asm_x64_callstack(self, fname: str, idx: int, p: str, junk: str) -> str:
-        if self.cfg.encrypt_ssn:
-            load_ssn = (
-                f"    mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; encrypted SSN\n"
-                f"    xor  eax, {p}XOR_KEY                           ; decrypt"
-            )
-        else:
-            load_ssn = f"    mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]  ; eax = SSN"
+    def _asm_x64_callstack(self, fname: str, idx: int, p: str, junk: str, junk2: str = "") -> str:
+        load_ssn = self._asm_load_ssn(idx, p, indent="    ")
 
         return f"""\
 ; --- {fname} (call stack spoofing: fabricated RBP chain + indirect) ---
@@ -2383,7 +2451,7 @@ OPTION DOTNAME
     sub  r10, 08h                           ; original first arg is at [rsp+0] before call
     mov  r10, QWORD PTR [r10 + 10h]        ; reload rcx from original shadow space
 
-    ; Jump to syscall;ret gadget in ntdll
+{junk2}    ; Jump to syscall;ret gadget in ntdll
     jmp  QWORD PTR [{p}SyscallAddrTable + {idx * 8}]
     ; After syscall;ret returns here is unreachable because of jmp
     ; Restore happens via wrapper or we accept the fake frame.
@@ -2491,8 +2559,10 @@ OPTION DOTNAME
 
 """
         if self.cfg.encrypt_ssn:
-            key = self._xor_key()
-            header = header.rstrip("\n") + f"\n{p}XOR_KEY EQU 0{key:08X}h\n\n"
+            header = header.rstrip("\n") + (
+                f"\n    EXTERN {p}KP0:DWORD\n"
+                f"    EXTERN {p}KP1:DWORD\n\n"
+            )
 
         stubs = []
         for idx, proto in enumerate(self._prototypes):
@@ -2505,13 +2575,7 @@ OPTION DOTNAME
     def _asm_wow64_stub(self, fname: str, idx: int, p: str, n_args: int) -> str:
         stack_arg_bytes = n_args * 4
 
-        if self.cfg.encrypt_ssn:
-            load_ssn = (
-                f"    mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]\n"
-                f"    xor  eax, {p}XOR_KEY"
-            )
-        else:
-            load_ssn = f"    mov  eax, DWORD PTR [{p}SsnTable + {idx * 4}]"
+        load_ssn = self._asm_load_ssn_x86(idx, p)
 
         # Heaven's Gate pattern:
         #   1. While in 32-bit mode, push return frame (offset+CS=0x23)
@@ -2630,6 +2694,11 @@ OPTION DOTNAME
                 f"extern void* {p}FrameGadgets[];\n"
                 f"extern DWORD {p}FrameGadgetCount;\n"
             )
+        if self.cfg.encrypt_ssn:
+            header += (
+                f"extern const volatile DWORD {p}KP0;\n"
+                f"extern const volatile DWORD {p}KP1;\n"
+            )
 
         # One global asm block; syntax switch is contained inside it.
         asm_lines = ["__asm__ ("]
@@ -2646,6 +2715,13 @@ OPTION DOTNAME
 
         return header + "\n" + "\n".join(asm_lines) + "\n"
 
+    def _gas_junk_lines(self) -> list:
+        """Generate junk instruction lines for GAS inline asm (quoted string format)."""
+        if not self.cfg.obfuscate:
+            return []
+        junk_str = self.obf.junk_instructions_gas()
+        return [f'    "    {junk_str}\\n\\t"']
+
     def _gas_stub(self, fname: str, idx: int, p: str,
                   method: InvocationMethod, egg: int) -> list:
         """Return a list of quoted asm string lines (for the global __asm__ block)
@@ -2653,32 +2729,49 @@ OPTION DOTNAME
         ssn_offset = idx * 4
         addr_offset = idx * 8
 
+        junk1 = self._gas_junk_lines()
+        junk2 = self._gas_junk_lines() if self.obf._rng.random() > 0.3 else []
+
         preamble = [
             f'    "  .globl {fname}\\n\\t"',
             f'    "  .def {fname}; .scl 2; .type 32; .endef\\n\\t"',
             f'    "{fname}:\\n\\t"',
             f'    "    mov r10, rcx\\n\\t"',
+        ] + junk1 + [
             f'    "    lea rcx, [rip + {p}SsnTable]\\n\\t"',
             f'    "    mov eax, dword ptr [rcx + {ssn_offset}]\\n\\t"',
         ]
         if self.cfg.encrypt_ssn:
-            key = self._xor_key()
-            preamble.append(f'    "    xor eax, 0x{key:08X}\\n\\t"')
+            preamble.extend([
+                f'    "    lea r11, [rip + {p}KP0]\\n\\t"',
+                f'    "    mov r11d, dword ptr [r11]\\n\\t"',
+                f'    "    lea rcx, [rip + {p}KP1]\\n\\t"',
+                f'    "    xor r11d, dword ptr [rcx]\\n\\t"',
+                f'    "    xor eax, r11d\\n\\t"',
+            ])
 
         if method == InvocationMethod.Embedded:
-            return preamble + [
+            return preamble + junk2 + [
                 '    "    syscall\\n\\t"',
                 '    "    ret\\n\\t"',
             ]
         elif method == InvocationMethod.Indirect:
-            return preamble + [
+            return preamble + junk2 + [
                 f'    "    lea rcx, [rip + {p}SyscallAddrTable]\\n\\t"',
                 f'    "    jmp qword ptr [rcx + {addr_offset}]\\n\\t"',
             ]
         elif method == InvocationMethod.Randomized:
-            # rdtsc trashes rdx; preserve it in r11 before calling rdtsc.
-            decrypt = ([f'    "    xor eax, 0x{self._xor_key():08X}\\n\\t"']
-                       if self.cfg.encrypt_ssn else [])
+            decrypt = []
+            if self.cfg.encrypt_ssn:
+                decrypt = [
+                    f'    "    lea r11, [rip + {p}KP0]\\n\\t"',
+                    f'    "    mov r11d, dword ptr [r11]\\n\\t"',
+                    f'    "    push rcx\\n\\t"',
+                    f'    "    lea rcx, [rip + {p}KP1]\\n\\t"',
+                    f'    "    xor r11d, dword ptr [rcx]\\n\\t"',
+                    f'    "    pop rcx\\n\\t"',
+                    f'    "    xor eax, r11d\\n\\t"',
+                ]
             return [
                 f'    "  .globl {fname}\\n\\t"',
                 f'    "  .def {fname}; .scl 2; .type 32; .endef\\n\\t"',

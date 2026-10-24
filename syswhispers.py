@@ -44,7 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.models import (
-    Architecture, Compiler, GeneratorConfig,
+    Architecture, Compiler, GeneratorConfig, HashAlgorithm,
     InvocationMethod, ResolutionMethod,
 )
 from core.generator import SysWhispers4
@@ -247,6 +247,13 @@ Examples:
         action="store_true",
         help="Compile-time string encryption (XOR-encoded string literals decoded at runtime)",
     )
+    eva.add_argument(
+        "--hash-algo",
+        choices=[h.value for h in HashAlgorithm],
+        default=HashAlgorithm.DJB2.value,
+        metavar="ALGO",
+        help="Hash algorithm for function name resolution: djb2 (default), crc32, fnv1a, ror13",
+    )
 
     # ---- Static table override -------------------------------------------
     p.add_argument(
@@ -360,6 +367,7 @@ def main() -> None:
         anti_debug      = args.anti_debug,
         sleep_encrypt   = args.sleep_encrypt,
         string_encrypt  = args.string_encrypt,
+        hash_algo       = HashAlgorithm(args.hash_algo),
         syscall_table   = args.syscall_table,
     )
 
