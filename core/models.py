@@ -121,6 +121,7 @@ class GeneratorConfig:
     unhook_ntdll: bool = False    # Remap clean ntdll .text over hooked one
     anti_debug:   bool = False    # Anti-debugging checks (PEB, timing, instrumentation)
     sleep_encrypt: bool = False   # Sleep obfuscation with memory encryption (Ekko-style)
+    veh_encrypt:   bool = False   # VEH-based on-demand memory encryption (page fault driven)
     string_encrypt: bool = False  # Compile-time string encryption
     module_stomp:  bool = False   # Copy stubs into .text of a loaded signed DLL
     hash_algo:     HashAlgorithm = HashAlgorithm.DJB2

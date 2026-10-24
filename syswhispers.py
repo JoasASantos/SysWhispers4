@@ -243,6 +243,12 @@ Examples:
         help="Include sleep encryption (Ekko-style XOR .text during sleep)",
     )
     eva.add_argument(
+        "--veh-encrypt",
+        action="store_true",
+        help="VEH-based on-demand memory encryption: encrypts code pages at rest, "
+             "decrypts on page fault, re-encrypts after execution (credit: xop @xopp1e)",
+    )
+    eva.add_argument(
         "--string-encrypt",
         action="store_true",
         help="Compile-time string encryption (XOR-encoded string literals decoded at runtime)",
@@ -371,6 +377,7 @@ def main() -> None:
         unhook_ntdll    = args.unhook_ntdll,
         anti_debug      = args.anti_debug,
         sleep_encrypt   = args.sleep_encrypt,
+        veh_encrypt     = args.veh_encrypt,
         string_encrypt  = args.string_encrypt,
         module_stomp    = args.module_stomp,
         hash_algo       = HashAlgorithm(args.hash_algo),
