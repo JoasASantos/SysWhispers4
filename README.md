@@ -197,6 +197,7 @@ Defeats:
 | ntdll Unhooking | `--unhook-ntdll` | Remap clean `.text` from `\KnownDlls\` |
 | Anti-Debug | `--anti-debug` | 6 detection checks (PEB, timing, heap, etc.) |
 | Sleep Encryption | `--sleep-encrypt` | Ekko-style XOR `.text` during sleep |
+| VEH Memory Encryption | `--veh-encrypt` | On-demand page-fault-driven decrypt/re-encrypt |
 | String Encryption | `--string-encrypt` | XOR-encoded string literals decoded at runtime |
 
 ---
@@ -284,6 +285,7 @@ Evasion / Obfuscation:
   --unhook-ntdll           Include ntdll unhooking (remap from KnownDlls)
   --anti-debug             Include anti-debugging checks (6 techniques)
   --sleep-encrypt          Include Ekko-style sleep encryption
+  --veh-encrypt            VEH-based on-demand memory encryption (page fault driven)
   --string-encrypt         XOR-encoded string literals decoded at runtime
 
 Output:
